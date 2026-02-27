@@ -26,8 +26,9 @@ DEFAULT_ROOT_PASSWORD=password
 # DB_PORT=3306
 # DB_USER=root
 # DB_PASSWORD=password
-# DB_NAME=cp_ops```
+# DB_NAME=cp_ops
+````
 
 3. Run the app:
    `npm run dev`
-````
+
