@@ -108,6 +108,62 @@ npm run build
 
 This creates the frontend build in `dist/`.
 
+## Run with Docker
+
+### Build image
+
+```bash
+docker build -t cp-ops:latest .
+```
+
+### Run container
+
+```bash
+docker run --rm -p 31987:31987 \
+  -e NODE_ENV=production \
+  -e SESSION_SECRET='replace-with-a-long-random-secret-min-32' \
+  -e DEFAULT_ROOT_PASSWORD='replace-this-password' \
+  -v cp_ops_data:/app/data \
+  -v cp_ops_uploads:/app/uploads \
+  cp-ops:latest
+```
+
+### Run with Docker Compose
+
+```bash
+docker compose up -d --build
+```
+
+Files included:
+- `Dockerfile`
+- `.dockerignore`
+- `docker-compose.yml`
+
+## Run with Kubernetes
+
+Kubernetes manifests are in the `k8s/` folder.
+
+Apply in this order:
+
+```bash
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/secret.yaml
+kubectl apply -f k8s/pvc.yaml
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
+```
+
+Optional Redis for shared rate limiting:
+
+```bash
+kubectl apply -f k8s/redis-optional.yaml
+```
+
+Important:
+- Update `SESSION_SECRET` and `DEFAULT_ROOT_PASSWORD` in `k8s/secret.yaml` before deploying.
+- Make sure the deployment image (`cp-ops:latest`) is available in your cluster registry/workers.
+- If you enable Redis, set `REDIS_URL` in `k8s/configmap.yaml`.
+
 ## Security Notes
 
 Before any real deployment, you should at minimum:

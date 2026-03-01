@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cp-ops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cp-ops
+  template:
+    metadata:
+      labels:
+        app: cp-ops
+    spec:
+      containers:
+        - name: cp-ops
+          image: cp-ops:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 31987
+          envFrom:
+            - configMapRef:
+                name: cp-ops-config
+            - secretRef:
+                name: cp-ops-secrets
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: uploads
+              mountPath: /app/uploads
+          readinessProbe:
+            httpGet:
+              path: /api/settings
+              port: 31987
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/settings
+              port: 31987
+            initialDelaySeconds: 20
+            periodSeconds: 20
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: cp-ops-data-pvc
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: cp-ops-uploads-pvc

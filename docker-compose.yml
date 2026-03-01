@@ -1,0 +1,39 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cp-ops:latest
+    container_name: cp-ops
+    ports:
+      - "31987:31987"
+    environment:
+      NODE_ENV: production
+      PORT: "31987"
+      DB_CLIENT: sqlite3
+      DB_FILENAME: /app/data/cp_ops.sqlite
+      SESSION_SECRET: "replace-with-a-long-random-secret-min-32"
+      DEFAULT_ROOT_USERNAME: root
+      DEFAULT_ROOT_PASSWORD: "replace-this-password"
+      # Optional shared rate limiting backend:
+      # REDIS_URL: redis://redis:6379
+    volumes:
+      - cp_ops_data:/app/data
+      - cp_ops_uploads:/app/uploads
+    restart: unless-stopped
+    # Uncomment if REDIS_URL is enabled
+    # depends_on:
+    #   - redis
+
+  # Optional Redis for shared rate limiting across instances
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: cp-ops-redis
+  #   restart: unless-stopped
+  #   volumes:
+  #     - cp_ops_redis:/data
+
+volumes:
+  cp_ops_data:
+  cp_ops_uploads:
+  # cp_ops_redis:
