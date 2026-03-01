@@ -20,7 +20,18 @@ declare module 'express-session' {
 async function startServer() {
   const isProduction = process.env.NODE_ENV === "production";
   const defaultRootUsername = process.env.DEFAULT_ROOT_USERNAME || "root";
-  const defaultRootPassword = process.env.DEFAULT_ROOT_PASSWORD || "AMT2610root";
+  const defaultRootPassword = process.env.DEFAULT_ROOT_PASSWORD;
+  const configuredSessionSecret = process.env.SESSION_SECRET;
+  const sessionSecret = (configuredSessionSecret && configuredSessionSecret.length >= 32)
+    ? configuredSessionSecret
+    : (isProduction ? null : "dev-only-insecure-session-secret-change-me-123456");
+
+  if (!sessionSecret) {
+    throw new Error("SESSION_SECRET is required and must be at least 32 characters long");
+  }
+  if (!configuredSessionSecret || configuredSessionSecret.length < 32) {
+    console.warn("Using fallback SESSION_SECRET for development/testing. Set SESSION_SECRET in .env.");
+  }
 
   // Initialize Database
   await initDb();
@@ -28,19 +39,23 @@ async function startServer() {
   // Ensure at least one ROOT user exists
   const rootExists = await db("users").where({ role: 'ROOT' }).first();
   if (!rootExists) {
+    if (!defaultRootPassword || defaultRootPassword.length < 6) {
+      throw new Error("DEFAULT_ROOT_PASSWORD is required (min 6 chars) when no ROOT user exists");
+    }
     const hashedPassword = await bcrypt.hash(defaultRootPassword, 10);
     await db("users").insert({ username: defaultRootUsername, password: hashedPassword, role: "ROOT" });
-    console.log(`Default ROOT user created: ${defaultRootUsername} / ${defaultRootPassword}`);
+    console.log(`Default ROOT user created: ${defaultRootUsername}`);
   }
 
   const app = express();
   app.use(express.json({ limit: "10mb" }));
+  app.disable("x-powered-by");
   
   // Proxy trust is often needed for secure cookies behind proxies
   app.set('trust proxy', 1);
 
   app.use(session({
-    secret: process.env.SESSION_SECRET || "cp-ops-secret-key",
+    secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
     name: 'cp_ops_session',
@@ -52,7 +67,167 @@ async function startServer() {
     }
   }));
 
+  app.use((req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    if (isProduction) {
+      res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    }
+    next();
+  });
+
+  app.use("/api", (req, res, next) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Pragma", "no-cache");
+    next();
+  });
+
   const PORT = Number(process.env.PORT) || 31987;
+  const redisUrl = process.env.REDIS_URL;
+
+  type RateLimitOptions = {
+    windowMs: number;
+    max: number;
+    key?: (req: any) => string;
+  };
+  type RateDecision = { allowed: boolean; retryAfterSec: number };
+  interface RateLimitStore {
+    consume(key: string, windowMs: number, max: number): Promise<RateDecision>;
+  }
+
+  type RateBucket = { count: number; resetAt: number };
+  const memoryBuckets = new Map<string, RateBucket>();
+
+  const memoryStore: RateLimitStore = {
+    async consume(key: string, windowMs: number, max: number) {
+      const now = Date.now();
+      const bucket = memoryBuckets.get(key);
+
+      if (!bucket || bucket.resetAt <= now) {
+        memoryBuckets.set(key, { count: 1, resetAt: now + windowMs });
+        return { allowed: true, retryAfterSec: 0 };
+      }
+
+      if (bucket.count >= max) {
+        return {
+          allowed: false,
+          retryAfterSec: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)),
+        };
+      }
+
+      bucket.count += 1;
+      memoryBuckets.set(key, bucket);
+      return { allowed: true, retryAfterSec: 0 };
+    }
+  };
+
+  let rateStore: RateLimitStore = memoryStore;
+
+  if (redisUrl) {
+    try {
+      const dynamicImport = new Function("m", "return import(m)") as (moduleName: string) => Promise<any>;
+      const redisModule = await dynamicImport("redis");
+      const redisClient = redisModule.createClient({ url: redisUrl });
+      redisClient.on("error", (err: unknown) => {
+        console.error("Redis rate limiter error:", err);
+      });
+      await redisClient.connect();
+      console.log("Redis-backed rate limiting enabled");
+
+      rateStore = {
+        async consume(key: string, windowMs: number, max: number) {
+          const redisKey = `cpops:ratelimit:${key}`;
+          const count = await redisClient.incr(redisKey);
+          if (count === 1) {
+            await redisClient.pExpire(redisKey, windowMs);
+          }
+          if (count > max) {
+            const ttl = await redisClient.pTtl(redisKey);
+            const retryAfterSec = Math.max(1, Math.ceil((Number(ttl) > 0 ? Number(ttl) : windowMs) / 1000));
+            return { allowed: false, retryAfterSec };
+          }
+          return { allowed: true, retryAfterSec: 0 };
+        }
+      };
+    } catch (error) {
+      console.warn("REDIS_URL is set but Redis client is unavailable, falling back to in-memory rate limiting.", error);
+    }
+  }
+
+  const createRateLimiter = (opts: RateLimitOptions) => {
+    return async (req: any, res: any, next: any) => {
+      const key = opts.key ? opts.key(req) : `${req.ip}:${req.path}`;
+      try {
+        const decision = await rateStore.consume(key, opts.windowMs, opts.max);
+        if (!decision.allowed) {
+          res.setHeader("Retry-After", String(decision.retryAfterSec));
+          return res.status(429).json({ error: "Too many requests. Please try again later." });
+        }
+      } catch (error) {
+        console.error("Rate limiter failed, allowing request:", error);
+      }
+      return next();
+    };
+  };
+
+  const loginRateLimit = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    key: (req: any) => `${req.ip}:login:${String(req.body?.username || "").toLowerCase()}`,
+  });
+
+  const sensitiveRateLimit = createRateLimiter({
+    windowMs: 60 * 1000,
+    max: 120,
+    key: (req: any) => `${req.ip}:${req.path}`,
+  });
+
+  const uploadRateLimit = createRateLimiter({
+    windowMs: 10 * 60 * 1000,
+    max: 20,
+    key: (req: any) => `${req.ip}:upload:${req.path}`,
+  });
+
+  app.use((req: any, res: any, next: any) => {
+    if (!req.path.startsWith("/api/")) return next();
+    const mutating = req.method === "POST" || req.method === "PUT" || req.method === "PATCH" || req.method === "DELETE";
+    if (!mutating) return next();
+
+    const host = String(req.get("host") || "");
+    const origin = req.get("origin");
+    const referer = req.get("referer");
+
+    const sameHost = (value: string) => {
+      try {
+        const parsed = new URL(value);
+        return parsed.host === host && (parsed.protocol === "http:" || parsed.protocol === "https:");
+      } catch {
+        return false;
+      }
+    };
+
+    if (origin) {
+      if (!sameHost(origin)) {
+        return res.status(403).json({ error: "CSRF origin denied" });
+      }
+      return next();
+    }
+
+    if (referer) {
+      if (!sameHost(referer)) {
+        return res.status(403).json({ error: "CSRF referer denied" });
+      }
+      return next();
+    }
+
+    if (req.session?.userId) {
+      return res.status(403).json({ error: "Missing origin headers" });
+    }
+
+    return next();
+  });
 
   // Auth Middleware
   const requireAuth = (req: any, res: any, next: any) => {
@@ -303,10 +478,17 @@ async function startServer() {
   };
 
   // Auth Routes
-  app.post("/api/login", async (req, res) => {
+  app.post("/api/login", loginRateLimit, async (req, res) => {
     const { username, password } = req.body;
+    if (typeof username !== "string" || typeof password !== "string") {
+      return res.status(400).json({ error: "Invalid credentials format" });
+    }
+    const normalizedUsername = username.trim();
+    if (!normalizedUsername || normalizedUsername.length > 64 || password.length > 256) {
+      return res.status(400).json({ error: "Invalid credentials format" });
+    }
     try {
-      const user = await db("users").where({ username }).first();
+      const user = await db("users").where({ username: normalizedUsername }).first();
       
       if (user && await bcrypt.compare(password, user.password)) {
         req.session.userId = user.id;
@@ -335,7 +517,7 @@ async function startServer() {
     }
   });
 
-  app.post("/api/users/me/password", requireAuth, async (req: any, res) => {
+  app.post("/api/users/me/password", requireAuth, sensitiveRateLimit, async (req: any, res) => {
     const { old_password, new_password } = req.body || {};
     if (typeof old_password !== "string" || !old_password) {
       return res.status(400).json({ error: "Oud wachtwoord is verplicht" });
@@ -363,8 +545,14 @@ async function startServer() {
     res.json(users);
   });
 
-  app.post("/api/users", requireRole(["ROOT", "ADMIN"]), async (req, res) => {
+  app.post("/api/users", requireRole(["ROOT", "ADMIN"]), sensitiveRateLimit, async (req, res) => {
     const { username, password, role } = req.body;
+    if (typeof username !== "string" || !username.trim() || username.trim().length > 64) {
+      return res.status(400).json({ error: "Ongeldige gebruikersnaam" });
+    }
+    if (typeof password !== "string" || password.length < 6 || password.length > 256) {
+      return res.status(400).json({ error: "Wachtwoord moet tussen 6 en 256 tekens bevatten" });
+    }
     const allowedRoles = ["ROOT", "ADMIN", "OPERATOR", "VIEWER"];
     if (!allowedRoles.includes(role)) {
       return res.status(400).json({ error: "Ongeldige rol" });
@@ -374,14 +562,14 @@ async function startServer() {
     }
     const hashedPassword = await bcrypt.hash(password, 10);
     try {
-      const [id] = await db("users").insert({ username, password: hashedPassword, role });
+      const [id] = await db("users").insert({ username: username.trim(), password: hashedPassword, role });
       res.json({ id });
     } catch (e) {
       res.status(400).json({ error: "Username already exists" });
     }
   });
 
-  app.patch("/api/users/:id", requireRole(["ROOT", "ADMIN"]), async (req: any, res) => {
+  app.patch("/api/users/:id", requireRole(["ROOT", "ADMIN"]), sensitiveRateLimit, async (req: any, res) => {
     const targetId = Number(req.params.id);
     if (!targetId) return res.status(400).json({ error: "Ongeldige gebruiker" });
 
@@ -463,7 +651,7 @@ async function startServer() {
     }
   });
 
-  app.delete("/api/users/:id", requireRole(["ROOT", "ADMIN"]), async (req: any, res) => {
+  app.delete("/api/users/:id", requireRole(["ROOT", "ADMIN"]), sensitiveRateLimit, async (req: any, res) => {
     try {
       const targetUser = await db("users").where({ id: req.params.id }).first();
       if (!targetUser) return res.status(404).json({ error: "User not found" });
@@ -486,8 +674,14 @@ async function startServer() {
     res.json(announcement);
   });
 
-  app.post("/api/announcements", requireRole(["ROOT", "ADMIN"]), async (req, res) => {
+  app.post("/api/announcements", requireRole(["ROOT", "ADMIN"]), sensitiveRateLimit, async (req, res) => {
     const { message, bg_color, is_active } = req.body;
+    if (typeof message !== "string" || message.length > 2000) {
+      return res.status(400).json({ error: "Ongeldig bericht" });
+    }
+    if (typeof bg_color !== "string" || bg_color.length > 32) {
+      return res.status(400).json({ error: "Ongeldige kleur" });
+    }
     await db("announcements").update({ message, bg_color, is_active: is_active ? 1 : 0 });
     res.json({ success: true });
   });
@@ -595,9 +789,15 @@ async function startServer() {
     });
   });
 
-  app.post("/api/events/:id/announcement", requireRole(["ROOT", "ADMIN", "OPERATOR"]), async (req, res) => {
+  app.post("/api/events/:id/announcement", requireRole(["ROOT", "ADMIN", "OPERATOR"]), sensitiveRateLimit, async (req, res) => {
     if (!await ensureEventAccess(req, res, req.params.id)) return;
     const { message, bg_color, is_active } = req.body;
+    if (typeof message !== "string" || message.length > 2000) {
+      return res.status(400).json({ error: "Ongeldig bericht" });
+    }
+    if (typeof bg_color !== "string" || bg_color.length > 32) {
+      return res.status(400).json({ error: "Ongeldige kleur" });
+    }
 
     const existing = await db("event_announcements").where({ event_id: req.params.id }).first();
     if (existing) {
@@ -1871,7 +2071,7 @@ async function startServer() {
     res.json(settingsObj);
   });
 
-  app.post("/api/settings", requireRole(["ROOT", "ADMIN"]), async (req, res) => {
+  app.post("/api/settings", requireRole(["ROOT", "ADMIN"]), sensitiveRateLimit, async (req, res) => {
     const settings = req.body;
     await db.transaction(async trx => {
       for (const [key, value] of Object.entries(settings)) {
@@ -1881,7 +2081,7 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  app.post("/api/settings/logo-upload", requireRole(["ROOT", "ADMIN"]), async (req, res) => {
+  app.post("/api/settings/logo-upload", requireRole(["ROOT", "ADMIN"]), uploadRateLimit, async (req, res) => {
     const { data_url, filename } = req.body || {};
     if (typeof data_url !== "string" || !data_url.startsWith("data:image/")) {
       return res.status(400).json({ error: "Ongeldige afbeelding" });
@@ -1900,14 +2100,18 @@ async function startServer() {
       "image/jpg": "jpg",
       "image/webp": "webp",
       "image/gif": "gif",
-      "image/svg+xml": "svg",
     };
     const ext = allowedMimes[mime];
     if (!ext) {
       return res.status(400).json({ error: "Bestandstype niet ondersteund" });
     }
 
-    const buffer = Buffer.from(base64Data, "base64");
+    let buffer: Buffer;
+    try {
+      buffer = Buffer.from(base64Data, "base64");
+    } catch {
+      return res.status(400).json({ error: "Ongeldige afbeelding data" });
+    }
     const maxBytes = 5 * 1024 * 1024;
     if (buffer.length > maxBytes) {
       return res.status(400).json({ error: "Afbeelding is te groot (max 5MB)" });
