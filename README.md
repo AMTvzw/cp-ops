@@ -60,6 +60,9 @@ Example configuration:
 DB_CLIENT=sqlite3
 DB_FILENAME=data/cp_ops.sqlite
 
+# Environment mode: development | test | production
+NODE_ENV=development
+
 # Session secret (required in production, min 32 chars)
 SESSION_SECRET=replace-with-a-long-random-secret
 
@@ -84,6 +87,7 @@ DEFAULT_ROOT_PASSWORD=replace-this-password
 ```
 
 Notes:
+- `NODE_ENV=production` enables production behavior; any other value is treated as non-production.
 - In development/test, the app can start without `SESSION_SECRET` using a fallback secret (warning in logs).
 - In production, `SESSION_SECRET` is mandatory and must be at least 32 characters.
 - If no ROOT user exists, `DEFAULT_ROOT_PASSWORD` must be set (minimum 6 characters).
@@ -120,3 +124,7 @@ When submitting changes, include:
 - Clear scope
 - Reproducible steps
 - Validation or test notes
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file.
