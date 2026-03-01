@@ -1,6 +1,7 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
+import fs from "fs/promises";
 import bcrypt from "bcryptjs";
 import session from "express-session";
 import db, { initDb } from "./db.js";
@@ -33,7 +34,7 @@ async function startServer() {
   }
 
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: "10mb" }));
   
   // Proxy trust is often needed for secure cookies behind proxies
   app.set('trust proxy', 1);
@@ -97,6 +98,9 @@ async function startServer() {
       .where("it.intervention_id", interventionId)
       .select("s.is_closed");
 
+    // Interventions without linked teams are managed manually (if needed)
+    if (allTeams.length === 0) return;
+
     const allClosed = allTeams.length > 0 && allTeams.every((t: any) => Number(t.is_closed) === 1);
     const nowIso = new Date().toISOString();
 
@@ -141,6 +145,77 @@ async function startServer() {
         await trx("intervention_status_history").insert(missingRows);
       }
     }
+  };
+
+  const validateStatusFlags = (isStart: number, isBusy: number) => {
+    if (isStart === 1 && isBusy === 1) {
+      throw new Error("STATUS_START_BUSY_CONFLICT");
+    }
+  };
+
+  const resolveDefaultStatusId = async (
+    trx: any,
+    eventId: number | string,
+    preferredStatusId?: number | null
+  ) => {
+    if (preferredStatusId) {
+      const specific = await trx("statuses")
+        .where({ id: preferredStatusId, event_id: eventId })
+        .first();
+      if (specific) return Number(specific.id);
+    }
+
+    const busyStatus = await trx("statuses")
+      .where({ event_id: eventId, is_busy: 1 })
+      .orderBy("id", "asc")
+      .first();
+    if (busyStatus) return Number(busyStatus.id);
+
+    const firstStatus = await trx("statuses")
+      .where({ event_id: eventId })
+      .orderBy("id", "asc")
+      .first();
+    return firstStatus ? Number(firstStatus.id) : null;
+  };
+
+  const getBlockedTeamsForInterventionAdd = async (
+    trx: any,
+    eventId: number | string,
+    teamIds: number[],
+    excludeInterventionId?: number | null
+  ) => {
+    if (teamIds.length === 0) return [];
+
+    const activeRows = await trx("intervention_teams as it")
+      .join("interventions as i", "it.intervention_id", "i.id")
+      .join("teams as t", "it.team_id", "t.id")
+      .leftJoin("statuses as s", "it.status_id", "s.id")
+      .where("i.event_id", eventId)
+      .whereNull("i.closed_at")
+      .whereIn("it.team_id", teamIds)
+      .modify((qb: any) => {
+        if (excludeInterventionId) {
+          qb.whereNot("it.intervention_id", excludeInterventionId);
+        }
+      })
+      .select("it.team_id", "t.name as team_name", "s.name as status_name", "s.is_start", "s.is_closed");
+
+    const blockedByTeam = new Map<number, { team_name: string; status_name: string | null }>();
+    for (const row of activeRows) {
+      if (Number(row.is_start) === 1 || Number(row.is_closed) === 1) continue;
+      const teamId = Number(row.team_id);
+      if (!blockedByTeam.has(teamId)) {
+        blockedByTeam.set(teamId, {
+          team_name: row.team_name,
+          status_name: row.status_name || null,
+        });
+      }
+    }
+
+    return Array.from(blockedByTeam.entries()).map(([team_id, info]) => ({
+      team_id,
+      ...info,
+    }));
   };
 
   const writeActionLog = async (
@@ -260,6 +335,28 @@ async function startServer() {
     }
   });
 
+  app.post("/api/users/me/password", requireAuth, async (req: any, res) => {
+    const { old_password, new_password } = req.body || {};
+    if (typeof old_password !== "string" || !old_password) {
+      return res.status(400).json({ error: "Oud wachtwoord is verplicht" });
+    }
+    if (typeof new_password !== "string" || new_password.length < 6) {
+      return res.status(400).json({ error: "Nieuw wachtwoord moet minstens 6 tekens bevatten" });
+    }
+
+    const currentUser = await db("users").where({ id: req.session.userId }).first();
+    if (!currentUser) return res.status(404).json({ error: "Gebruiker niet gevonden" });
+
+    const oldMatches = await bcrypt.compare(old_password, currentUser.password);
+    if (!oldMatches) {
+      return res.status(400).json({ error: "Oud wachtwoord is onjuist" });
+    }
+
+    const hashedPassword = await bcrypt.hash(new_password, 10);
+    await db("users").where({ id: req.session.userId }).update({ password: hashedPassword });
+    res.json({ success: true });
+  });
+
   // User Management (ROOT/ADMIN only)
   app.get("/api/users", requireRole(["ROOT", "ADMIN"]), async (req, res) => {
     const users = await db("users").select("id", "username", "role");
@@ -268,12 +365,101 @@ async function startServer() {
 
   app.post("/api/users", requireRole(["ROOT", "ADMIN"]), async (req, res) => {
     const { username, password, role } = req.body;
+    const allowedRoles = ["ROOT", "ADMIN", "OPERATOR", "VIEWER"];
+    if (!allowedRoles.includes(role)) {
+      return res.status(400).json({ error: "Ongeldige rol" });
+    }
+    if (req.session.role === "ADMIN" && role === "ROOT") {
+      return res.status(403).json({ error: "Admin mag geen ROOT-gebruiker aanmaken" });
+    }
     const hashedPassword = await bcrypt.hash(password, 10);
     try {
       const [id] = await db("users").insert({ username, password: hashedPassword, role });
       res.json({ id });
     } catch (e) {
       res.status(400).json({ error: "Username already exists" });
+    }
+  });
+
+  app.patch("/api/users/:id", requireRole(["ROOT", "ADMIN"]), async (req: any, res) => {
+    const targetId = Number(req.params.id);
+    if (!targetId) return res.status(400).json({ error: "Ongeldige gebruiker" });
+
+    const targetUser = await db("users").where({ id: targetId }).first();
+    if (!targetUser) return res.status(404).json({ error: "User not found" });
+
+    if (req.session.role === "ADMIN" && targetUser.role === "ROOT") {
+      return res.status(403).json({ error: "Admin mag geen ROOT-gebruiker aanpassen" });
+    }
+
+    const { username, role, password } = req.body || {};
+    const allowedRoles = ["ROOT", "ADMIN", "OPERATOR", "VIEWER"];
+    const updatePayload: Record<string, any> = {};
+
+    if (typeof username === "string") {
+      const normalizedUsername = username.trim();
+      if (!normalizedUsername) {
+        return res.status(400).json({ error: "Gebruikersnaam is verplicht" });
+      }
+      updatePayload.username = normalizedUsername;
+    }
+
+    if (typeof role !== "undefined") {
+      if (!allowedRoles.includes(role)) {
+        return res.status(400).json({ error: "Ongeldige rol" });
+      }
+      if (
+        req.session.role === "ADMIN" &&
+        Number(req.session.userId) === targetId &&
+        role !== targetUser.role
+      ) {
+        return res.status(403).json({ error: "Admin mag eigen rol niet wijzigen" });
+      }
+      if (req.session.role === "ADMIN" && role === "ROOT") {
+        return res.status(403).json({ error: "Admin mag geen ROOT-rol toekennen" });
+      }
+      if (
+        targetUser.role === "ROOT" &&
+        role !== "ROOT"
+      ) {
+        const otherRoot = await db("users")
+          .where({ role: "ROOT" })
+          .whereNot({ id: targetId })
+          .first();
+        if (!otherRoot) {
+          return res.status(400).json({ error: "Minstens 1 ROOT-gebruiker is verplicht" });
+        }
+      }
+      updatePayload.role = role;
+    }
+
+    if (typeof password !== "undefined") {
+      if (typeof password !== "string" || password.length < 6) {
+        return res.status(400).json({ error: "Wachtwoord moet minstens 6 tekens bevatten" });
+      }
+      updatePayload.password = await bcrypt.hash(password, 10);
+    }
+
+    if (Object.keys(updatePayload).length === 0) {
+      return res.status(400).json({ error: "Geen geldige velden om te updaten" });
+    }
+
+    try {
+      await db("users").where({ id: targetId }).update(updatePayload);
+      const updated = await db("users").where({ id: targetId }).select("id", "username", "role").first();
+
+      if (Number(req.session.userId) === targetId) {
+        req.session.username = updated.username;
+        req.session.role = updated.role;
+      }
+
+      res.json(updated);
+    } catch (error: any) {
+      const message = String(error?.message || "");
+      if (message.toLowerCase().includes("unique")) {
+        return res.status(400).json({ error: "Username already exists" });
+      }
+      res.status(500).json({ error: "Update failed" });
     }
   });
 
@@ -295,12 +481,12 @@ async function startServer() {
   });
 
   // Announcements
-  app.get("/api/announcements", async (req, res) => {
+  app.get("/api/announcements", requireRole(["ROOT", "ADMIN", "OPERATOR"]), async (req, res) => {
     const announcement = await db("announcements").first();
     res.json(announcement);
   });
 
-  app.post("/api/announcements", requireRole(["ROOT", "ADMIN", "OPERATOR"]), async (req, res) => {
+  app.post("/api/announcements", requireRole(["ROOT", "ADMIN"]), async (req, res) => {
     const { message, bg_color, is_active } = req.body;
     await db("announcements").update({ message, bg_color, is_active: is_active ? 1 : 0 });
     res.json({ success: true });
@@ -319,7 +505,7 @@ async function startServer() {
     res.json(events);
   });
 
-  app.post("/api/events", requireRole(["ROOT", "ADMIN", "OPERATOR"]), async (req, res) => {
+  app.post("/api/events", requireRole(["ROOT", "ADMIN"]), async (req, res) => {
     const { name, date, end_date, location, organizer, contact_info, description } = req.body;
     try {
       const [eventId] = await db("events").insert({ 
@@ -328,12 +514,12 @@ async function startServer() {
       
       // Create default statuses for new event
       const defaultStatuses = [
-        { name: 'Beschikbaar in hulppost', color: '#94a3b8', is_closed: 0 },
-        { name: 'Radiofonisch op het terrein', color: '#3b82f6', is_closed: 0 },
-        { name: 'Vertrokken op interventie', color: '#f59e0b', is_closed: 0 },
-        { name: 'Aangekomen op interventie', color: '#eab308', is_closed: 0 },
-        { name: 'Vertrokken naar de hulppost', color: '#f97316', is_closed: 0 },
-        { name: 'Aangekomen in de hulppost', color: '#22c55e', is_closed: 1 }
+        { name: 'Beschikbaar in hulppost', color: '#94a3b8', is_closed: 0, is_start: 1, is_busy: 0 },
+        { name: 'Radiofonisch op het terrein', color: '#3b82f6', is_closed: 0, is_start: 1, is_busy: 0 },
+        { name: 'Vertrokken op interventie', color: '#f59e0b', is_closed: 0, is_start: 0, is_busy: 1 },
+        { name: 'Aangekomen op interventie', color: '#eab308', is_closed: 0, is_start: 0, is_busy: 1 },
+        { name: 'Vertrokken naar de hulppost', color: '#f97316', is_closed: 0, is_start: 0, is_busy: 1 },
+        { name: 'Aangekomen in de hulppost', color: '#22c55e', is_closed: 1, is_start: 1, is_busy: 0 }
       ];
       
       await db("statuses").insert(defaultStatuses.map(s => ({ ...s, event_id: eventId })));
@@ -570,14 +756,28 @@ async function startServer() {
 
   app.post("/api/events/:id/statuses", requireRole(["ROOT", "ADMIN"]), async (req, res) => {
     if (!await ensureEventAccess(req, res, req.params.id)) return;
-    const { name, color, is_closed } = req.body;
-    const [id] = await db("statuses").insert({
-      event_id: req.params.id,
-      name,
-      color,
-      is_closed: is_closed ? 1 : 0
-    });
-    res.json({ id });
+    try {
+      const { name, color, is_closed, is_start, is_busy } = req.body || {};
+      const isClosed = is_closed ? 1 : 0;
+      const isStart = is_start ? 1 : 0;
+      const isBusy = is_busy ? 1 : 0;
+      validateStatusFlags(isStart, isBusy);
+
+      const [id] = await db("statuses").insert({
+        event_id: req.params.id,
+        name,
+        color,
+        is_closed: isClosed,
+        is_start: isStart,
+        is_busy: isBusy,
+      });
+      res.json({ id });
+    } catch (error) {
+      if (error instanceof Error && error.message === "STATUS_START_BUSY_CONFLICT") {
+        return res.status(400).json({ error: "Een status kan niet tegelijk 'begin' en 'bezig' zijn" });
+      }
+      res.status(500).json({ error: "Status aanmaken mislukt" });
+    }
   });
 
   app.patch("/api/statuses/:id", requireRole(["ROOT", "ADMIN"]), async (req, res) => {
@@ -585,15 +785,31 @@ async function startServer() {
       const status = await db("statuses").where({ id: req.params.id }).first();
       if (!status) return res.status(404).json({ error: "Status not found" });
 
-      const { name, color, is_closed } = req.body || {};
+      const { name, color, is_closed, is_start, is_busy } = req.body || {};
       const updatePayload: Record<string, any> = {};
 
       if (typeof name === "string" && name.trim()) updatePayload.name = name.trim();
       if (typeof color === "string" && color.trim()) updatePayload.color = color.trim();
       if (typeof is_closed !== "undefined") updatePayload.is_closed = is_closed ? 1 : 0;
+      if (typeof is_start !== "undefined") updatePayload.is_start = is_start ? 1 : 0;
+      if (typeof is_busy !== "undefined") updatePayload.is_busy = is_busy ? 1 : 0;
+
+      const finalIsStart = typeof is_start !== "undefined" ? (is_start ? 1 : 0) : Number(status.is_start) || 0;
+      const finalIsBusy = typeof is_busy !== "undefined" ? (is_busy ? 1 : 0) : Number(status.is_busy) || 0;
+      validateStatusFlags(finalIsStart, finalIsBusy);
 
       if (Object.keys(updatePayload).length === 0) {
         return res.status(400).json({ error: "Geen geldige velden om te updaten" });
+      }
+
+      if ((Number(status.is_start) || 0) === 1 && finalIsStart !== 1) {
+        const otherStart = await db("statuses")
+          .where({ event_id: status.event_id, is_start: 1 })
+          .whereNot({ id: status.id })
+          .first();
+        if (!otherStart) {
+          return res.status(400).json({ error: "Minstens 1 beginstatus is verplicht" });
+        }
       }
 
       await db.transaction(async trx => {
@@ -612,6 +828,9 @@ async function startServer() {
 
       res.json({ success: true });
     } catch (error) {
+      if (error instanceof Error && error.message === "STATUS_START_BUSY_CONFLICT") {
+        return res.status(400).json({ error: "Een status kan niet tegelijk 'begin' en 'bezig' zijn" });
+      }
       console.error("Error updating status:", error);
       res.status(500).json({ error: "Update failed" });
     }
@@ -636,6 +855,16 @@ async function startServer() {
 
       if ((Number(totalStatuses?.count) || 0) <= 1) {
         return res.status(400).json({ error: "Minstens 1 status is verplicht" });
+      }
+
+      if ((Number(status.is_start) || 0) === 1) {
+        const otherStart = await db("statuses")
+          .where({ event_id: status.event_id, is_start: 1 })
+          .whereNot({ id: status.id })
+          .first();
+        if (!otherStart) {
+          return res.status(400).json({ error: "Minstens 1 beginstatus is verplicht" });
+        }
       }
 
       await db.transaction(async trx => {
@@ -815,7 +1044,7 @@ async function startServer() {
         return res.status(400).json({ error: "Onbekende teamsoort voor dit evenement" });
       }
 
-      const [id] = await db("teams").insert({ event_id: req.params.id, name, type });
+      const [id] = await db("teams").insert({ event_id: req.params.id, name, type, is_deployed: 1 });
       await writeActionLog(db, req, {
         event_id: req.params.id,
         team_id: id,
@@ -824,6 +1053,67 @@ async function startServer() {
       res.json({ id });
     } catch (error) {
       res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  app.patch("/api/teams/:id", requireRole(["ROOT", "ADMIN", "OPERATOR"]), async (req, res) => {
+    try {
+      const team = await db("teams").where({ id: req.params.id }).first();
+      if (!team) return res.status(404).json({ error: "Ploeg niet gevonden" });
+      if (!await ensureEventAccess(req, res, team.event_id)) return;
+
+      const { name, type, is_deployed } = req.body || {};
+      const updatePayload: Record<string, any> = {};
+
+      if (typeof name === "string" && name.trim()) {
+        updatePayload.name = name.trim();
+      }
+      if (typeof type === "string" && type.trim()) {
+        const typeExists = await db("team_types")
+          .where({ event_id: team.event_id, name: type.trim() })
+          .first();
+        if (!typeExists) {
+          return res.status(400).json({ error: "Onbekende teamsoort voor dit evenement" });
+        }
+        updatePayload.type = type.trim();
+      }
+      if (typeof is_deployed !== "undefined") {
+        updatePayload.is_deployed = is_deployed ? 1 : 0;
+      }
+
+      if (Object.keys(updatePayload).length === 0) {
+        return res.status(400).json({ error: "Geen geldige velden om te updaten" });
+      }
+
+      await db("teams").where({ id: req.params.id }).update(updatePayload);
+
+      const newName = updatePayload.name ?? team.name;
+      if (updatePayload.name && updatePayload.name !== team.name) {
+        await writeActionLog(db, req, {
+          event_id: team.event_id,
+          team_id: team.id,
+          message: `Ploeg hernoemd van "${team.name}" naar "${newName}"`,
+        });
+      }
+      if (updatePayload.type && updatePayload.type !== team.type) {
+        await writeActionLog(db, req, {
+          event_id: team.event_id,
+          team_id: team.id,
+          message: `Ploeg "${newName}" categorie gewijzigd van "${team.type}" naar "${updatePayload.type}"`,
+        });
+      }
+      if (typeof updatePayload.is_deployed !== "undefined" && Number(updatePayload.is_deployed) !== Number(team.is_deployed)) {
+        await writeActionLog(db, req, {
+          event_id: team.event_id,
+          team_id: team.id,
+          message: `Ploeg "${newName}" gemarkeerd als ${Number(updatePayload.is_deployed) === 1 ? "ingezetbaar" : "niet-ingezet"}`,
+        });
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error updating team:", error);
+      res.status(500).json({ error: "Ploeg bijwerken mislukt" });
     }
   });
 
@@ -869,7 +1159,7 @@ async function startServer() {
     const now = Date.now();
     const interventions = await db("interventions")
       .where("event_id", req.params.id)
-      .orderBy("created_at", "desc");
+      .orderBy("created_at", "asc");
     
     const interventionsWithTeams = await Promise.all(interventions.map(async inter => {
       const activeHistory = await db("intervention_status_history")
@@ -930,6 +1220,40 @@ async function startServer() {
     const { title, location, description, status_id, team_ids } = req.body;
     try {
       const interventionId = await db.transaction(async trx => {
+        const requestedTeamIds = Array.isArray(team_ids)
+          ? team_ids.map((v: any) => Number(v)).filter(Boolean)
+          : [];
+
+        const candidateTeams = requestedTeamIds.length > 0
+          ? await trx("teams")
+              .where({ event_id: req.params.id })
+              .whereIn("id", requestedTeamIds)
+              .select("id", "name", "is_deployed")
+          : [];
+        const notDeployedTeams = candidateTeams.filter((t: any) => Number(t.is_deployed) !== 1);
+        if (notDeployedTeams.length > 0) {
+          throw new Error(`TEAM_NOT_DEPLOYED:${notDeployedTeams.map((t: any) => t.name).join(", ")}`);
+        }
+        const validTeamIds = candidateTeams.map((t: any) => Number(t.id));
+
+        const blockedTeams = await getBlockedTeamsForInterventionAdd(
+          trx,
+          req.params.id,
+          validTeamIds
+        );
+        if (blockedTeams.length > 0) {
+          const details = blockedTeams
+            .map((t: any) => `${t.team_name} (${t.status_name || "geen status"})`)
+            .join(", ");
+          throw new Error(`TEAM_NOT_ALLOWED_STATUS:${details}`);
+        }
+
+        const resolvedStatusId = await resolveDefaultStatusId(
+          trx,
+          req.params.id,
+          status_id ? Number(status_id) : null
+        );
+
         const maxNoRow = await trx("interventions")
           .where({ event_id: req.params.id })
           .max<{ max_no: number }>("intervention_number as max_no")
@@ -944,20 +1268,20 @@ async function startServer() {
           description
         });
         
-        if (team_ids && team_ids.length > 0) {
+        if (validTeamIds.length > 0) {
           await trx("intervention_teams").insert(
-            team_ids.map((teamId: number) => ({ 
+            validTeamIds.map((teamId: number) => ({ 
               intervention_id: id, 
               team_id: teamId,
-              status_id: status_id // Initial status for all teams
+              status_id: resolvedStatusId
             }))
           );
 
           await trx("intervention_status_history").insert(
-            team_ids.map((teamId: number) => ({
+            validTeamIds.map((teamId: number) => ({
               intervention_id: id,
               team_id: teamId,
-              status_id: status_id || null,
+              status_id: resolvedStatusId || null,
               started_at: new Date().toISOString(),
               ended_at: null,
             }))
@@ -975,6 +1299,16 @@ async function startServer() {
       
       res.json({ id: interventionId });
     } catch (error) {
+      if (error instanceof Error && error.message.startsWith("TEAM_NOT_DEPLOYED:")) {
+        return res.status(400).json({
+          error: `Niet-ingezette ploeg kan niet gekoppeld worden aan interventie: ${error.message.replace("TEAM_NOT_DEPLOYED:", "")}`,
+        });
+      }
+      if (error instanceof Error && error.message.startsWith("TEAM_NOT_ALLOWED_STATUS:")) {
+        return res.status(400).json({
+          error: `Ploeg toevoegen kan enkel vanuit een beginstatus of gesloten status. Blokkering: ${error.message.replace("TEAM_NOT_ALLOWED_STATUS:", "")}`,
+        });
+      }
       console.error("Error creating intervention:", error);
       res.status(500).json({ error: "Internal Server Error" });
     }
@@ -1058,24 +1392,33 @@ async function startServer() {
           const candidateTeams = await trx("teams")
             .where({ event_id: intervention.event_id })
             .whereIn("id", addTeamIds)
-            .select("id", "name");
+            .select("id", "name", "is_deployed");
+          const notDeployedTeams = candidateTeams.filter((t: any) => Number(t.is_deployed) !== 1);
+          if (notDeployedTeams.length > 0) {
+            throw new Error(`TEAM_NOT_DEPLOYED:${notDeployedTeams.map((t: any) => t.name).join(", ")}`);
+          }
           const teamsToAdd = candidateTeams.filter((t: any) => !existingSet.has(Number(t.id)));
 
-          let targetStatusId: number | null = default_status_id ? Number(default_status_id) : null;
-          if (!targetStatusId) {
-            const firstStatus = await trx("statuses")
-              .where({ event_id: intervention.event_id })
-              .orderBy("id", "asc")
-              .first();
-            targetStatusId = firstStatus ? Number(firstStatus.id) : null;
-          } else {
-            const statusExists = await trx("statuses")
-              .where({ id: targetStatusId, event_id: intervention.event_id })
-              .first();
-            if (!statusExists) targetStatusId = null;
-          }
+          const targetStatusId = await resolveDefaultStatusId(
+            trx,
+            intervention.event_id,
+            default_status_id ? Number(default_status_id) : null
+          );
 
           if (teamsToAdd.length > 0) {
+            const blockedTeams = await getBlockedTeamsForInterventionAdd(
+              trx,
+              intervention.event_id,
+              teamsToAdd.map((t: any) => Number(t.id)),
+              intervention.id
+            );
+            if (blockedTeams.length > 0) {
+              const details = blockedTeams
+                .map((t: any) => `${t.team_name} (${t.status_name || "geen status"})`)
+                .join(", ");
+              throw new Error(`TEAM_NOT_ALLOWED_STATUS:${details}`);
+            }
+
             await trx("intervention_teams").insert(
               teamsToAdd.map((t: any) => ({
                 intervention_id: intervention.id,
@@ -1110,6 +1453,16 @@ async function startServer() {
 
       res.json({ success: true });
     } catch (error) {
+      if (error instanceof Error && error.message.startsWith("TEAM_NOT_DEPLOYED:")) {
+        return res.status(400).json({
+          error: `Niet-ingezette ploeg kan niet gekoppeld worden aan interventie: ${error.message.replace("TEAM_NOT_DEPLOYED:", "")}`,
+        });
+      }
+      if (error instanceof Error && error.message.startsWith("TEAM_NOT_ALLOWED_STATUS:")) {
+        return res.status(400).json({
+          error: `Ploeg toevoegen kan enkel vanuit een beginstatus of gesloten status. Blokkering: ${error.message.replace("TEAM_NOT_ALLOWED_STATUS:", "")}`,
+        });
+      }
       console.error("Error updating intervention:", error);
       res.status(500).json({ error: "Interventie bewerken mislukt" });
     }
@@ -1134,6 +1487,46 @@ async function startServer() {
     } catch (error) {
       console.error("Error deleting intervention:", error);
       res.status(500).json({ error: "Delete failed" });
+    }
+  });
+
+  app.patch("/api/interventions/:id/close-empty", requireRole(["ROOT", "ADMIN", "OPERATOR"]), async (req: any, res) => {
+    try {
+      const intervention = await db("interventions").where({ id: req.params.id }).first();
+      if (!intervention) return res.status(404).json({ error: "Interventie niet gevonden" });
+      if (!await ensureEventAccess(req, res, intervention.event_id)) return;
+      if (intervention.closed_at) return res.json({ success: true });
+
+      const activeLink = await db("intervention_teams")
+        .where({ intervention_id: intervention.id })
+        .first();
+      if (activeLink) {
+        return res.status(400).json({ error: "Interventie kan niet manueel gesloten worden: er zijn gekoppelde ploegen" });
+      }
+
+      const historyRow = await db("intervention_status_history")
+        .where({ intervention_id: intervention.id })
+        .first();
+      if (historyRow) {
+        return res.status(400).json({ error: "Interventie kan enkel gesloten worden als er nooit een ploeg gekoppeld is geweest" });
+      }
+
+      await db.transaction(async trx => {
+        await trx("interventions")
+          .where({ id: intervention.id })
+          .update({ closed_at: new Date().toISOString() });
+
+        await writeActionLog(trx, req, {
+          event_id: intervention.event_id,
+          intervention_id: intervention.id,
+          message: `Interventie manueel gesloten zonder ploegkoppeling: ${intervention.title}`,
+        });
+      });
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error closing empty intervention:", error);
+      res.status(500).json({ error: "Interventie sluiten mislukt" });
     }
   });
 
@@ -1487,6 +1880,56 @@ async function startServer() {
     });
     res.json({ success: true });
   });
+
+  app.post("/api/settings/logo-upload", requireRole(["ROOT", "ADMIN"]), async (req, res) => {
+    const { data_url, filename } = req.body || {};
+    if (typeof data_url !== "string" || !data_url.startsWith("data:image/")) {
+      return res.status(400).json({ error: "Ongeldige afbeelding" });
+    }
+
+    const match = data_url.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (!match) {
+      return res.status(400).json({ error: "Ongeldige afbeelding data" });
+    }
+
+    const mime = match[1].toLowerCase();
+    const base64Data = match[2];
+    const allowedMimes: Record<string, string> = {
+      "image/png": "png",
+      "image/jpeg": "jpg",
+      "image/jpg": "jpg",
+      "image/webp": "webp",
+      "image/gif": "gif",
+      "image/svg+xml": "svg",
+    };
+    const ext = allowedMimes[mime];
+    if (!ext) {
+      return res.status(400).json({ error: "Bestandstype niet ondersteund" });
+    }
+
+    const buffer = Buffer.from(base64Data, "base64");
+    const maxBytes = 5 * 1024 * 1024;
+    if (buffer.length > maxBytes) {
+      return res.status(400).json({ error: "Afbeelding is te groot (max 5MB)" });
+    }
+
+    const safeBaseName = (typeof filename === "string" ? filename : "logo")
+      .toLowerCase()
+      .replace(/[^a-z0-9-_]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "logo";
+    const fileName = `${safeBaseName}-${Date.now()}.${ext}`;
+    const uploadDir = path.join(process.cwd(), "uploads", "branding");
+    await fs.mkdir(uploadDir, { recursive: true });
+    await fs.writeFile(path.join(uploadDir, fileName), buffer);
+
+    const logoUrl = `/uploads/branding/${fileName}`;
+    await db("settings").where({ key: "logo_url" }).update({ value: logoUrl });
+
+    res.json({ url: logoUrl });
+  });
+
+  app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
   // Catch-all for API routes to prevent falling through to SPA fallback
   app.all("/api/*", (req, res) => {

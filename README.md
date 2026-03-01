@@ -1,18 +1,66 @@
+# CP-OPS
 
+CP-OPS is an open-source incident coordination tool for event operations.  
+It helps teams manage events, interventions, statuses, logs, announcements, and access roles in one web application.
 
-## Run Locally
+## Important Disclaimer
 
-**Prerequisites:** Node.js
+This project is open source and largely vibe-coded.
 
-1. Install dependencies:
-   `npm install`
-2. Update the variables for the ENV file
+No guarantees are provided for:
+- Correctness
+- Availability
+- Security
+- Stability
+- Fitness for any specific purpose
 
-````# Database Configuration (default local SQLite)
+Use this software at your own risk.  
+You are fully responsible for deployment, hardening, backups, data protection, and operational safety.
+
+## What the App Does
+
+CP-OPS supports:
+- Event management (create, edit, close workflows)
+- Intervention tracking (card/list views, status timelines, durations)
+- Team management (types, members, deployable/non-deployable state)
+- Status configuration (start/busy/closed semantics)
+- Role-based access (`ROOT`, `ADMIN`, `OPERATOR`, `VIEWER`)
+- Event-scoped and global announcements
+- Audit logs and data export
+- Basic branding and theme customization
+
+## Tech Stack
+
+- Frontend: React, TypeScript, Vite, Tailwind CSS
+- Backend: Express, TypeScript
+- Database: SQLite (default) or MySQL/MariaDB via Knex
+- Auth: Session-based authentication
+
+## Getting Started
+
+### 1. Prerequisites
+
+- Node.js 20+ recommended
+- npm
+
+### 2. Install dependencies
+
+```bash
+npm install
+```
+
+### 3. Configure environment
+
+Copy `.env.example` to `.env` and update values as needed.
+
+Example configuration:
+
+```env
+# Database Configuration (default local SQLite)
 DB_CLIENT=sqlite3
 DB_FILENAME=data/cp_ops.sqlite
 
-# Default root user (only used when no ROOT user exists yet)
+# Default root user (used only when no ROOT user exists yet)
 DEFAULT_ROOT_USERNAME=username
 DEFAULT_ROOT_PASSWORD=password
 
@@ -27,8 +75,37 @@ DEFAULT_ROOT_PASSWORD=password
 # DB_USER=root
 # DB_PASSWORD=password
 # DB_NAME=cp_ops
-````
+```
 
-3. Run the app:
-   `npm run dev`
+### 4. Run in development
 
+```bash
+npm run dev
+```
+
+The app starts with the backend and frontend in one process (via `server.ts` + Vite middleware).
+
+## Build for Production
+
+```bash
+npm run build
+```
+
+This creates the frontend build in `dist/`.
+
+## Security Notes
+
+Before any real deployment, you should at minimum:
+- Change all default credentials
+- Set a strong `SESSION_SECRET`
+- Use HTTPS and secure cookie settings
+- Restrict network/database access
+- Add monitoring, backups, and incident recovery procedures
+
+## Contributing
+
+Contributions are welcome through issues and pull requests.  
+When submitting changes, include:
+- Clear scope
+- Reproducible steps
+- Validation or test notes

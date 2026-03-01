@@ -6,12 +6,100 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
+:root {
+  --app-primary: #2563eb;
+  --app-primary-hover: #1d4ed8;
+  --app-bg: #f8fafc;
+  --app-surface: #ffffff;
+  --app-surface-alt: #f1f5f9;
+  --app-text: #0f172a;
+  --app-muted: #475569;
+  --app-border: #cbd5e1;
+  --app-danger: #dc2626;
+  --app-danger-hover: #b91c1c;
+}
+
 @layer base {
+  html,
+  body,
+  #root {
+    min-height: 100%;
+    width: 100%;
+  }
+
   body {
-    @apply bg-slate-50 text-slate-900 font-sans;
+    @apply font-sans;
+    background-color: var(--app-bg);
+    color: var(--app-text);
+    overflow-x: hidden;
   }
 }
 
 .glass {
   @apply bg-white/80 backdrop-blur-md border border-white/20 shadow-sm;
+}
+
+/* Global theme mapping so existing utility classes follow beheer colors */
+.bg-slate-50,
+.bg-slate-100 {
+  background-color: var(--app-surface-alt) !important;
+}
+
+.bg-white {
+  background-color: var(--app-surface) !important;
+}
+
+.text-slate-900 {
+  color: var(--app-text) !important;
+}
+
+.text-slate-700,
+.text-slate-600,
+.text-slate-500,
+.text-slate-400,
+.text-slate-300 {
+  color: var(--app-muted) !important;
+}
+
+.border-slate-100,
+.border-slate-200,
+.border-slate-300 {
+  border-color: var(--app-border) !important;
+}
+
+.bg-blue-600 {
+  background-color: var(--app-primary) !important;
+}
+
+.hover\:bg-blue-700:hover {
+  background-color: var(--app-primary-hover) !important;
+}
+
+.text-blue-600 {
+  color: var(--app-primary) !important;
+}
+
+.hover\:text-blue-600:hover {
+  color: var(--app-primary) !important;
+}
+
+.border-blue-600 {
+  border-color: var(--app-primary) !important;
+}
+
+.focus\:ring-blue-500:focus {
+  --tw-ring-color: var(--app-primary) !important;
+}
+
+.bg-red-600 {
+  background-color: var(--app-danger) !important;
+}
+
+.hover\:bg-red-700:hover {
+  background-color: var(--app-danger-hover) !important;
+}
+
+.hover\:text-red-600:hover,
+.hover\:text-red-500:hover {
+  color: var(--app-danger) !important;
 }

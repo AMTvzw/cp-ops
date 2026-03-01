@@ -22,9 +22,9 @@ function AppContent() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
+    <div className="min-h-screen bg-slate-50 flex flex-col overflow-x-hidden">
       <AnnouncementBanner />
-      <div className="flex-1">
+      <div className="flex-1 min-w-0">
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/event/:id" element={<EventDetail />} />

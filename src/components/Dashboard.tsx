@@ -5,6 +5,7 @@ import { motion } from 'motion/react';
 import { format } from 'date-fns';
 import { nl } from 'date-fns/locale';
 import { useUser } from '../contexts/UserContext';
+import PasswordChangeButton from './PasswordChangeButton';
 
 interface Event {
   id: number;
@@ -30,12 +31,11 @@ export default function Dashboard() {
     description: '' 
   });
   
-  const [showAnnouncement, setShowAnnouncement] = useState(false);
-  const [announcement, setAnnouncement] = useState({ message: '', bg_color: '#ef4444', is_active: false });
+  const [showGlobalAnnouncement, setShowGlobalAnnouncement] = useState(false);
+  const [globalAnnouncement, setGlobalAnnouncement] = useState({ message: '', bg_color: '#ef4444', is_active: false });
 
   useEffect(() => {
     fetchEvents();
-    fetchAnnouncement();
   }, []);
 
   const fetchEvents = async () => {
@@ -53,20 +53,25 @@ export default function Dashboard() {
     }
   };
 
-  const fetchAnnouncement = async () => {
+  const fetchGlobalAnnouncement = async () => {
     try {
       const res = await fetch('/api/announcements');
       if (res.ok) {
         const contentType = res.headers.get('content-type');
         if (contentType && contentType.includes('application/json')) {
           const data = await res.json();
-          setAnnouncement({ ...data, is_active: !!data.is_active });
+          setGlobalAnnouncement({ ...data, is_active: !!data.is_active });
         }
       }
     } catch (err) {
-      console.error('Error fetching announcement:', err);
+      console.error('Error fetching global announcement:', err);
     }
   };
+
+  useEffect(() => {
+    if (!showGlobalAnnouncement) return;
+    fetchGlobalAnnouncement();
+  }, [showGlobalAnnouncement]);
 
   const handleCreateEvent = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,18 +97,18 @@ export default function Dashboard() {
     }
   };
 
-  const handleUpdateAnnouncement = async (e: React.FormEvent) => {
+  const handleUpdateGlobalAnnouncement = async (e: React.FormEvent) => {
     e.preventDefault();
     await fetch('/api/announcements', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(announcement)
+      body: JSON.stringify(globalAnnouncement)
     });
-    setShowAnnouncement(false);
+    setShowGlobalAnnouncement(false);
   };
 
   return (
-    <div className="max-w-5xl mx-auto p-4 md:p-8">
+    <div className="max-w-5xl mx-auto p-4 md:p-8 overflow-x-hidden">
       <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-12 gap-4">
         <div className="flex items-center gap-4">
           {settings.logo_url && (
@@ -114,35 +119,36 @@ export default function Dashboard() {
             <p className="text-slate-500 mt-1">Welkom, <span className="font-bold text-slate-700">{user?.username}</span> ({user?.role})</p>
           </div>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && (
-            <button 
-              onClick={() => setShowAnnouncement(true)}
-              className="bg-red-600 text-white px-4 py-2 rounded-xl font-bold flex items-center gap-2 hover:bg-red-700 transition-all shadow-lg shadow-red-100"
+        <div className="flex flex-wrap gap-2 w-full md:w-auto">
+          {hasRole(['ROOT', 'ADMIN']) && (
+            <button
+              onClick={() => setShowGlobalAnnouncement(true)}
+              className="bg-red-700 text-white px-4 py-2 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-red-800 transition-all shadow-lg shadow-red-100 w-full sm:w-auto"
             >
-              <Megaphone className="w-4 h-4" /> Melding
+              <Megaphone className="w-4 h-4" /> Globale Melding
             </button>
           )}
           {hasRole(['ROOT', 'ADMIN']) && (
             <Link 
               to="/users"
-              className="bg-slate-800 text-white px-4 py-2 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-900 transition-all shadow-lg shadow-slate-200"
+              className="bg-slate-800 text-white px-4 py-2 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-slate-900 transition-all shadow-lg shadow-slate-200 w-full sm:w-auto"
             >
               <Settings className="w-4 h-4" /> Beheer
             </Link>
           )}
-          {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && (
+          {hasRole(['ROOT', 'ADMIN']) && (
             <button 
               onClick={() => setShowNewEvent(true)}
-              className="text-white px-4 py-2 rounded-xl font-bold flex items-center gap-2 transition-all shadow-lg"
+              className="text-white px-4 py-2 rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg w-full sm:w-auto"
               style={{ backgroundColor: settings.primary_color }}
             >
               <Plus className="w-4 h-4" /> Nieuw Event
             </button>
           )}
+          <PasswordChangeButton className="bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-slate-50 transition-all w-full sm:w-auto" />
           <button 
             onClick={logout}
-            className="bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-50 transition-all"
+            className="bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-slate-50 transition-all w-full sm:w-auto"
           >
             <LogOut className="w-4 h-4" /> Uitloggen
           </button>
@@ -202,7 +208,7 @@ export default function Dashboard() {
           <div className="col-span-full py-20 text-center border-2 border-dashed border-slate-200 rounded-3xl">
             <Calendar className="w-12 h-12 text-slate-300 mx-auto mb-4" />
             <p className="text-slate-400 font-medium">Nog geen evenementen aangemaakt.</p>
-            {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && (
+            {hasRole(['ROOT', 'ADMIN']) && (
               <button 
                 onClick={() => setShowNewEvent(true)}
                 className="mt-4 font-bold hover:underline"
@@ -324,44 +330,43 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Announcement Modal */}
-      {showAnnouncement && (
+      {showGlobalAnnouncement && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <motion.div 
+          <motion.div
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="bg-white rounded-3xl p-8 w-full max-w-md shadow-2xl"
+            className="bg-white rounded-3xl p-6 sm:p-8 w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto"
           >
             <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
-              <Megaphone className="text-red-600" /> Globale Melding
+              <Megaphone className="text-red-700" /> Globale Melding
             </h2>
-            <form onSubmit={handleUpdateAnnouncement} className="space-y-4">
+            <form onSubmit={handleUpdateGlobalAnnouncement} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Bericht</label>
                 <textarea
                   required
-                  value={announcement.message}
-                  onChange={e => setAnnouncement(prev => ({ ...prev, message: e.target.value }))}
+                  value={globalAnnouncement.message}
+                  onChange={e => setGlobalAnnouncement(prev => ({ ...prev, message: e.target.value }))}
                   className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-red-500 outline-none transition-all h-32"
-                  placeholder="Typ hier de belangrijke melding..."
+                  placeholder="Typ hier de globale melding..."
                 />
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Achtergrondkleur</label>
-                <div className="flex gap-2">
+                <div className="flex gap-2 flex-wrap">
                   {['#ef4444', '#f97316', '#eab308', '#3b82f6', '#1e293b'].map(color => (
                     <button
                       key={color}
                       type="button"
-                      onClick={() => setAnnouncement(prev => ({ ...prev, bg_color: color }))}
-                      className={`w-10 h-10 rounded-full border-2 ${announcement.bg_color === color ? 'border-slate-900 ring-2 ring-slate-200' : 'border-transparent'}`}
+                      onClick={() => setGlobalAnnouncement(prev => ({ ...prev, bg_color: color }))}
+                      className={`w-10 h-10 rounded-full border-2 ${globalAnnouncement.bg_color === color ? 'border-slate-900 ring-2 ring-slate-200' : 'border-transparent'}`}
                       style={{ backgroundColor: color }}
                     />
                   ))}
-                  <input 
-                    type="color" 
-                    value={announcement.bg_color}
-                    onChange={e => setAnnouncement(prev => ({ ...prev, bg_color: e.target.value }))}
+                  <input
+                    type="color"
+                    value={globalAnnouncement.bg_color}
+                    onChange={e => setGlobalAnnouncement(prev => ({ ...prev, bg_color: e.target.value }))}
                     className="w-10 h-10 rounded-full border-none p-0 overflow-hidden cursor-pointer"
                   />
                 </div>
@@ -369,23 +374,23 @@ export default function Dashboard() {
               <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={announcement.is_active}
-                  onChange={e => setAnnouncement(prev => ({ ...prev, is_active: e.target.checked }))}
+                  checked={globalAnnouncement.is_active}
+                  onChange={e => setGlobalAnnouncement(prev => ({ ...prev, is_active: e.target.checked }))}
                   className="w-4 h-4 rounded border-slate-300 text-red-600 focus:ring-red-500"
                 />
-                Toon banner aan iedereen
+                Toon globale melding aan Admin/Root/Ops
               </label>
-              <div className="flex gap-3 mt-8">
-                <button 
+              <div className="flex flex-col sm:flex-row gap-3 mt-8">
+                <button
                   type="button"
-                  onClick={() => setShowAnnouncement(false)}
+                  onClick={() => setShowGlobalAnnouncement(false)}
                   className="flex-1 px-4 py-3 border border-slate-200 rounded-xl text-slate-600 font-bold hover:bg-slate-50 transition-all"
                 >
                   Annuleren
                 </button>
-                <button 
+                <button
                   type="submit"
-                  className="flex-1 px-4 py-3 bg-red-600 text-white rounded-xl font-bold hover:bg-red-700 transition-all shadow-lg shadow-red-100"
+                  className="flex-1 px-4 py-3 bg-red-700 text-white rounded-xl font-bold hover:bg-red-800 transition-all shadow-lg shadow-red-100"
                 >
                   Opslaan
                 </button>

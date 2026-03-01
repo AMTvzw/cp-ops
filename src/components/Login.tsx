@@ -34,11 +34,11 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4 py-6 overflow-x-hidden">
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="w-full max-w-md bg-white rounded-3xl shadow-xl border border-slate-200 p-8"
+        className="w-full max-w-md bg-white rounded-3xl shadow-xl border border-slate-200 p-6 sm:p-8 max-h-[90vh] overflow-y-auto"
       >
         <div className="flex flex-col items-center mb-8">
           {settings.logo_url ? (
@@ -51,7 +51,7 @@ export default function Login() {
               <Shield className="w-8 h-8" />
             </div>
           )}
-          <h1 className="text-3xl font-extrabold text-slate-900">{settings.app_name} Login</h1>
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 text-center">{settings.app_name} Login</h1>
           <p className="text-slate-500 mt-2">Voer uw gegevens in om door te gaan</p>
         </div>
 

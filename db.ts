@@ -102,7 +102,20 @@ export async function initDb() {
       table.string('name').notNullable();
       table.string('color').defaultTo('#3b82f6');
       table.integer('is_closed').defaultTo(0);
+      table.integer('is_start').defaultTo(0);
+      table.integer('is_busy').defaultTo(0);
     });
+  } else {
+    if (!await db.schema.hasColumn('statuses', 'is_start')) {
+      await db.schema.table('statuses', (table) => {
+        table.integer('is_start').defaultTo(0);
+      });
+    }
+    if (!await db.schema.hasColumn('statuses', 'is_busy')) {
+      await db.schema.table('statuses', (table) => {
+        table.integer('is_busy').defaultTo(0);
+      });
+    }
   }
 
   // Team Types Table
@@ -122,7 +135,15 @@ export async function initDb() {
       table.integer('event_id').unsigned().references('id').inTable('events').onDelete('CASCADE');
       table.string('name').notNullable();
       table.string('type').notNullable();
+      table.integer('is_deployed').defaultTo(1);
     });
+  } else {
+    if (!await db.schema.hasColumn('teams', 'is_deployed')) {
+      await db.schema.table('teams', (table) => {
+        table.integer('is_deployed').defaultTo(1);
+      });
+      await db('teams').whereNull('is_deployed').update({ is_deployed: 1 });
+    }
   }
 
   // Team Members Table
@@ -246,8 +267,39 @@ export async function initDb() {
     await db('settings').insert([
       { key: 'app_name', value: 'CP-OPS' },
       { key: 'primary_color', value: '#2563eb' },
-      { key: 'logo_url', value: '' }
+      { key: 'logo_url', value: '' },
+      { key: 'primary_hover_color', value: '#1d4ed8' },
+      { key: 'background_color', value: '#f8fafc' },
+      { key: 'surface_color', value: '#ffffff' },
+      { key: 'surface_alt_color', value: '#f1f5f9' },
+      { key: 'text_color', value: '#0f172a' },
+      { key: 'muted_text_color', value: '#475569' },
+      { key: 'border_color', value: '#cbd5e1' },
+      { key: 'danger_color', value: '#dc2626' },
+      { key: 'danger_hover_color', value: '#b91c1c' }
     ]);
+  }
+
+  const defaultSettings: Record<string, string> = {
+    app_name: 'CP-OPS',
+    primary_color: '#2563eb',
+    logo_url: '',
+    primary_hover_color: '#1d4ed8',
+    background_color: '#f8fafc',
+    surface_color: '#ffffff',
+    surface_alt_color: '#f1f5f9',
+    text_color: '#0f172a',
+    muted_text_color: '#475569',
+    border_color: '#cbd5e1',
+    danger_color: '#dc2626',
+    danger_hover_color: '#b91c1c',
+  };
+
+  for (const [key, value] of Object.entries(defaultSettings)) {
+    const existing = await db('settings').where({ key }).first();
+    if (!existing) {
+      await db('settings').insert({ key, value });
+    }
   }
 
   // Ensure each event has default team types
@@ -290,6 +342,37 @@ export async function initDb() {
         await db('interventions')
           .where({ id: interventions[index].id })
           .update({ intervention_number: expectedNo });
+      }
+    }
+
+    // Ensure each event has at least one begin-status and one bezig-status
+    const eventStatuses = await db('statuses')
+      .where({ event_id: event.id })
+      .orderBy('id', 'asc')
+      .select('id', 'name', 'is_closed', 'is_start', 'is_busy');
+
+    if (eventStatuses.length > 0) {
+      const hasStart = eventStatuses.some(s => Number(s.is_start) === 1);
+      const hasBusy = eventStatuses.some(s => Number(s.is_busy) === 1);
+
+      if (!hasStart) {
+        const preferredStart =
+          eventStatuses.find(s => /beschikbaar|hulppost|vrij|start/i.test(String(s.name || ''))) ||
+          eventStatuses.find(s => Number(s.is_closed) === 1) ||
+          eventStatuses[0];
+        if (preferredStart) {
+          await db('statuses').where({ id: preferredStart.id }).update({ is_start: 1 });
+        }
+      }
+
+      if (!hasBusy) {
+        const preferredBusy =
+          eventStatuses.find(s => /interventie|vertrokken|bezig|onderweg|aangekomen/i.test(String(s.name || ''))) ||
+          eventStatuses.find(s => Number(s.is_start) !== 1) ||
+          eventStatuses[0];
+        if (preferredBusy) {
+          await db('statuses').where({ id: preferredBusy.id }).update({ is_busy: 1 });
+        }
       }
     }
   }
