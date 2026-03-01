@@ -1,0 +1,26 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cp-ops:latest
+    container_name: cp-ops
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "31987"
+      DB_CLIENT: sqlite3
+      DB_FILENAME: /app/data/cp_ops.sqlite
+    ports:
+      - "31987:31987"
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:31987/api/settings"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

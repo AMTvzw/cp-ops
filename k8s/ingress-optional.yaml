@@ -1,0 +1,21 @@
+# Optional ingress for external access.
+# Requires an ingress controller (for example nginx-ingress).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cp-ops
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: cp-ops.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cp-ops
+                port:
+                  number: 80

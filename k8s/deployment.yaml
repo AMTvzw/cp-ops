@@ -14,8 +14,8 @@ spec:
     spec:
       containers:
         - name: cp-ops
-          image: cp-ops:latest
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/amtvzw/cp-ops:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 31987
           envFrom:

@@ -138,19 +138,22 @@ Files included:
 - `Dockerfile`
 - `.dockerignore`
 - `docker-compose.yml`
+- `docker-compose.server.yml` (direct server use with `.env` and bind mounts)
+
+Direct server command:
+
+```bash
+docker compose -f docker-compose.server.yml up -d --build
+```
 
 ## Run with Kubernetes
 
 Kubernetes manifests are in the `k8s/` folder.
 
-Apply in this order:
+Quick apply (recommended):
 
 ```bash
-kubectl apply -f k8s/configmap.yaml
-kubectl apply -f k8s/secret.yaml
-kubectl apply -f k8s/pvc.yaml
-kubectl apply -f k8s/deployment.yaml
-kubectl apply -f k8s/service.yaml
+kubectl apply -k k8s
 ```
 
 Optional Redis for shared rate limiting:
@@ -159,9 +162,15 @@ Optional Redis for shared rate limiting:
 kubectl apply -f k8s/redis-optional.yaml
 ```
 
+Optional ingress:
+
+```bash
+kubectl apply -f k8s/ingress-optional.yaml -n cp-ops
+```
+
 Important:
 - Update `SESSION_SECRET` and `DEFAULT_ROOT_PASSWORD` in `k8s/secret.yaml` before deploying.
-- Make sure the deployment image (`cp-ops:latest`) is available in your cluster registry/workers.
+- Make sure the deployment image in `k8s/deployment.yaml` is available to your cluster nodes.
 - If you enable Redis, set `REDIS_URL` in `k8s/configmap.yaml`.
 
 ## Security Notes
