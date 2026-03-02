@@ -4,7 +4,7 @@ import fs from "fs/promises";
 import { fileURLToPath } from "url";
 import bcrypt from "bcryptjs";
 import session from "express-session";
-import db, { initDb } from "./db";
+import db, { initDb } from "./db.js";
 
 const defaultTeamTypes = ["Terrein", "Interventie", "DGH", "NDPA", "Dienstleiding"];
 
