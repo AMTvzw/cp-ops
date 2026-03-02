@@ -9,13 +9,20 @@ const dbClient = process.env.DB_CLIENT || 'sqlite3';
 const isMysqlClient = dbClient === 'mysql' || dbClient === 'mysql2';
 const defaultSqliteFilename = process.env.VERCEL ? '/tmp/cp_ops.sqlite' : 'data/cp_ops.sqlite';
 
-const sqliteFilePath = path.resolve(
+let sqliteFilePath = path.resolve(
   process.cwd(),
   process.env.DB_FILENAME || defaultSqliteFilename,
 );
 
 if (dbClient === 'sqlite3') {
-  fs.mkdirSync(path.dirname(sqliteFilePath), { recursive: true });
+  try {
+    fs.mkdirSync(path.dirname(sqliteFilePath), { recursive: true });
+  } catch (error) {
+    const fallbackSqlitePath = '/tmp/cp_ops.sqlite';
+    console.warn(`SQLite path "${sqliteFilePath}" is not writable, falling back to "${fallbackSqlitePath}".`, error);
+    sqliteFilePath = fallbackSqlitePath;
+    fs.mkdirSync(path.dirname(sqliteFilePath), { recursive: true });
+  }
 }
 
 const asBool = (value: string | undefined, fallback = false) => {
@@ -37,14 +44,25 @@ const buildMysqlConnection = () => {
   };
 
   if (process.env.DB_URL) {
-    const parsed = new URL(process.env.DB_URL);
-    baseConnection = {
-      host: parsed.hostname,
-      user: decodeURIComponent(parsed.username),
-      password: decodeURIComponent(parsed.password),
-      database: parsed.pathname.replace(/^\//, ''),
-      port: parsed.port ? Number(parsed.port) : 3306,
-    };
+    try {
+      const parsed = new URL(process.env.DB_URL);
+      baseConnection = {
+        host: parsed.hostname,
+        user: decodeURIComponent(parsed.username),
+        password: decodeURIComponent(parsed.password),
+        database: parsed.pathname.replace(/^\//, ''),
+        port: parsed.port ? Number(parsed.port) : 3306,
+      };
+    } catch (error) {
+      console.warn('Invalid DB_URL format, falling back to DB_HOST/DB_USER/DB_PASSWORD/DB_NAME.', error);
+      baseConnection = {
+        host: process.env.DB_HOST,
+        user: process.env.DB_USER,
+        password: process.env.DB_PASSWORD,
+        database: process.env.DB_NAME,
+        port: Number(process.env.DB_PORT) || 3306,
+      };
+    }
   } else {
     baseConnection = {
       host: process.env.DB_HOST,
