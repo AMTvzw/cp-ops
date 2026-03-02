@@ -139,9 +139,12 @@ UPLOAD_STORAGE=db
 ```
 
 Notes:
+- Set these as **Production** variables in Vercel (not only Preview/Development), then redeploy:
+  - `SESSION_SECRET` (required, min 32 characters)
+  - `DB_SSL_REJECT_UNAUTHORIZED` (for Easyhost/self-signed chain use `false`)
 - With `UPLOAD_STORAGE=db`, logo uploads are persisted in MariaDB/MySQL and served via `/api/uploads/:id`.
 - If you set `UPLOAD_STORAGE=fs`, Vercel writes to ephemeral storage (`/tmp/uploads`).
-- If your DB provider uses a custom CA chain, temporarily set `DB_SSL_REJECT_UNAUTHORIZED=false` while validating certificate setup.
+- If your DB provider uses a custom or self-signed CA chain, set `DB_SSL_REJECT_UNAUTHORIZED=false` (or provide a trusted CA chain and keep it `true`).
 
 ## Run with Docker
 
