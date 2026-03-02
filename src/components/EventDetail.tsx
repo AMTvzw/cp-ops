@@ -192,7 +192,7 @@ export default function EventDetail() {
   const [savingEventAssignments, setSavingEventAssignments] = useState(false);
 
   useEffect(() => {
-    fetchData();
+    fetchData({ showLoader: true });
   }, [id]);
 
   useEffect(() => {
@@ -236,8 +236,9 @@ export default function EventDetail() {
     return () => window.clearInterval(interval);
   }, []);
 
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = async (options?: { showLoader?: boolean }) => {
+    const showLoader = options?.showLoader === true;
+    if (showLoader) setLoading(true);
     try {
       const fetchJson = async (url: string) => {
         const res = await fetch(url);
@@ -335,7 +336,9 @@ export default function EventDetail() {
     } catch (err) {
       console.error(err);
     } finally {
-      setLoading(false);
+      if (showLoader) {
+        setLoading(false);
+      }
     }
   };
 
