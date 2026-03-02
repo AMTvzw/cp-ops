@@ -5,7 +5,8 @@ import 'dotenv/config';
 
 const defaultTeamTypes = ['Terrein', 'Interventie', 'DGH', 'NDPA', 'Dienstleiding'];
 
-const dbClient = process.env.DB_CLIENT || 'sqlite3';
+const defaultDbClient = process.env.VERCEL ? 'mysql2' : 'sqlite3';
+const dbClient = process.env.DB_CLIENT || defaultDbClient;
 const isMysqlClient = dbClient === 'mysql' || dbClient === 'mysql2';
 const defaultSqliteFilename = process.env.VERCEL ? '/tmp/cp_ops.sqlite' : 'data/cp_ops.sqlite';
 
