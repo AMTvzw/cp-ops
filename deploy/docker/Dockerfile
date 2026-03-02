@@ -13,7 +13,8 @@ RUN mkdir -p /app/data /app/uploads
 ENV NODE_ENV=production \
     PORT=31987 \
     DB_CLIENT=sqlite3 \
-    DB_FILENAME=/app/data/cp_ops.sqlite
+    DB_FILENAME=/app/data/cp_ops.sqlite \
+    UPLOAD_STORAGE=fs
 
 EXPOSE 31987
 

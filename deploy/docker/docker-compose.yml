@@ -12,6 +12,7 @@ services:
       PORT: "31987"
       DB_CLIENT: sqlite3
       DB_FILENAME: /app/data/cp_ops.sqlite
+      UPLOAD_STORAGE: fs
       # Optional external MariaDB/MySQL:
       # DB_HOST: your-db-host
       # DB_PORT: "3306"
@@ -21,6 +22,7 @@ services:
       # DB_URL: mysql://user:password@host:3306/dbname
       # DB_SSL: "true"
       # DB_SSL_REJECT_UNAUTHORIZED: "true"
+      # UPLOAD_STORAGE: "db"
       SESSION_SECRET: "replace-with-a-long-random-secret-min-32"
       DEFAULT_ROOT_USERNAME: root
       DEFAULT_ROOT_PASSWORD: "replace-this-password"
