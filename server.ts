@@ -17,6 +17,81 @@ declare module 'express-session' {
   }
 }
 
+class KnexSessionStore extends session.Store {
+  private tableReady: Promise<void> | null = null;
+
+  private async ensureTable() {
+    if (!this.tableReady) {
+      this.tableReady = (async () => {
+        const exists = await db.schema.hasTable("sessions");
+        if (exists) return;
+        await db.schema.createTable("sessions", (table) => {
+          table.string("sid", 255).primary();
+          table.text("sess").notNullable();
+          table.bigInteger("expires_at").index();
+          table.timestamp("created_at").defaultTo(db.fn.now());
+        });
+      })();
+    }
+    await this.tableReady;
+  }
+
+  get(sid: string, callback: (err?: any, session?: session.SessionData | null) => void) {
+    (async () => {
+      await this.ensureTable();
+      const row = await db("sessions").where({ sid }).first();
+      if (!row) return callback(undefined, null);
+
+      const expiresAt = row.expires_at != null ? Number(row.expires_at) : null;
+      if (expiresAt != null && Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+        await db("sessions").where({ sid }).del();
+        return callback(undefined, null);
+      }
+
+      const parsed = JSON.parse(String(row.sess));
+      return callback(undefined, parsed);
+    })().catch((error) => callback(error));
+  }
+
+  set(sid: string, sess: session.SessionData, callback?: (err?: any) => void) {
+    (async () => {
+      await this.ensureTable();
+      const cookieExpires = sess?.cookie?.expires ? new Date(sess.cookie.expires as any).getTime() : null;
+      const maxAge = typeof sess?.cookie?.maxAge === "number" ? sess.cookie.maxAge : null;
+      const expiresAt = Number.isFinite(cookieExpires as number)
+        ? cookieExpires
+        : (maxAge != null ? Date.now() + maxAge : null);
+
+      await db("sessions")
+        .insert({
+          sid,
+          sess: JSON.stringify(sess),
+          expires_at: expiresAt,
+        })
+        .onConflict("sid")
+        .merge({
+          sess: JSON.stringify(sess),
+          expires_at: expiresAt,
+        });
+    })()
+      .then(() => callback?.())
+      .catch((error) => callback?.(error));
+  }
+
+  destroy(sid: string, callback?: (err?: any) => void) {
+    (async () => {
+      await this.ensureTable();
+      await db("sessions").where({ sid }).del();
+    })()
+      .then(() => callback?.())
+      .catch((error) => callback?.(error));
+  }
+
+  touch(sid: string, sess: session.SessionData, callback?: () => void) {
+    this.set(sid, sess, () => callback?.());
+  }
+}
+
 export async function createApp() {
   const isProduction = process.env.NODE_ENV === "production";
   const defaultRootUsername = process.env.DEFAULT_ROOT_USERNAME || "root";
@@ -93,6 +168,7 @@ export async function createApp() {
   app.set('trust proxy', 1);
 
   app.use(session({
+    store: new KnexSessionStore(),
     secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
