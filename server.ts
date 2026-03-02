@@ -33,19 +33,57 @@ export async function createApp() {
     console.warn("Using fallback SESSION_SECRET for development/testing. Set SESSION_SECRET in .env.");
   }
 
-  // Initialize Database
-  await initDb();
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const runDatabaseBootstrap = async () => {
+    await initDb();
 
-  // Ensure at least one ROOT user exists
-  const rootExists = await db("users").where({ role: 'ROOT' }).first();
-  if (!rootExists) {
+    const rootExists = await db("users").where({ role: "ROOT" }).first();
+    if (rootExists) return;
+
     if (!defaultRootPassword || defaultRootPassword.length < 6) {
       throw new Error("DEFAULT_ROOT_PASSWORD is required (min 6 chars) when no ROOT user exists");
     }
+
     const hashedPassword = await bcrypt.hash(defaultRootPassword, 10);
-    await db("users").insert({ username: defaultRootUsername, password: hashedPassword, role: "ROOT" });
-    console.log(`Default ROOT user created: ${defaultRootUsername}`);
-  }
+    try {
+      await db("users").insert({ username: defaultRootUsername, password: hashedPassword, role: "ROOT" });
+      console.log(`Default ROOT user created: ${defaultRootUsername}`);
+    } catch (error: any) {
+      const code = String(error?.code || "");
+      if (code !== "ER_DUP_ENTRY" && code !== "SQLITE_CONSTRAINT") {
+        throw error;
+      }
+      const existingRoot = await db("users").where({ role: "ROOT" }).first();
+      if (!existingRoot) throw error;
+    }
+  };
+
+  let dbBootstrapPromise: Promise<void> | null = null;
+  const ensureDatabaseReady = async () => {
+    if (!dbBootstrapPromise) {
+      dbBootstrapPromise = (async () => {
+        const maxAttempts = Number(process.env.DB_INIT_MAX_ATTEMPTS || 3);
+        let lastError: unknown;
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+          try {
+            await runDatabaseBootstrap();
+            return;
+          } catch (error) {
+            lastError = error;
+            console.error(`Database bootstrap failed (attempt ${attempt}/${maxAttempts})`, error);
+            if (attempt < maxAttempts) {
+              await sleep(300 * attempt);
+            }
+          }
+        }
+        throw lastError;
+      })();
+      dbBootstrapPromise.catch(() => {
+        dbBootstrapPromise = null;
+      });
+    }
+    await dbBootstrapPromise;
+  };
 
   const app = express();
   app.use(express.json({ limit: "10mb" }));
@@ -82,6 +120,16 @@ export async function createApp() {
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("Pragma", "no-cache");
     next();
+  });
+
+  app.use("/api", async (req, res, next) => {
+    try {
+      await ensureDatabaseReady();
+      next();
+    } catch (error) {
+      console.error("API blocked: database is unavailable", error);
+      return res.status(503).json({ error: "Database unavailable" });
+    }
   });
 
   const redisUrl = process.env.REDIS_URL;

@@ -92,6 +92,17 @@ const db = knex({
       : {
           filename: sqliteFilePath,
         },
+  ...(isMysqlClient
+    ? {
+        pool: {
+          min: 0,
+          max: Number(process.env.DB_POOL_MAX || 2),
+          acquireTimeoutMillis: Number(process.env.DB_POOL_ACQUIRE_TIMEOUT_MS || 15000),
+          idleTimeoutMillis: Number(process.env.DB_POOL_IDLE_TIMEOUT_MS || 30000),
+        },
+        acquireConnectionTimeout: Number(process.env.DB_ACQUIRE_CONNECTION_TIMEOUT_MS || 15000),
+      }
+    : {}),
   useNullAsDefault: dbClient === 'sqlite3',
 });
 
