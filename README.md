@@ -76,6 +76,8 @@ DEFAULT_ROOT_PASSWORD=replace-this-password
 # External MariaDB/MySQL via URL:
 # DB_CLIENT=mysql2
 # DB_URL=mysql://user:password@localhost:3306/cp_ops
+# DB_SSL=true
+# DB_SSL_REJECT_UNAUTHORIZED=true
 
 # External MariaDB/MySQL via separate values:
 # DB_CLIENT=mysql2
@@ -84,6 +86,8 @@ DEFAULT_ROOT_PASSWORD=replace-this-password
 # DB_USER=root
 # DB_PASSWORD=password
 # DB_NAME=cp_ops
+# DB_SSL=true
+# DB_SSL_REJECT_UNAUTHORIZED=true
 ```
 
 Notes:
@@ -91,6 +95,7 @@ Notes:
 - In development/test, the app can start without `SESSION_SECRET` using a fallback secret (warning in logs).
 - In production, `SESSION_SECRET` is mandatory and must be at least 32 characters.
 - If no ROOT user exists, `DEFAULT_ROOT_PASSWORD` must be set (minimum 6 characters).
+- For hosted MariaDB/MySQL (for example Easyhost), you may need `DB_SSL=true`.
 
 ### 4. Run in development
 

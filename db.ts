@@ -6,6 +6,7 @@ import 'dotenv/config';
 const defaultTeamTypes = ['Terrein', 'Interventie', 'DGH', 'NDPA', 'Dienstleiding'];
 
 const dbClient = process.env.DB_CLIENT || 'sqlite3';
+const isMysqlClient = dbClient === 'mysql' || dbClient === 'mysql2';
 
 const sqliteFilePath = path.resolve(
   process.cwd(),
@@ -16,19 +17,58 @@ if (dbClient === 'sqlite3') {
   fs.mkdirSync(path.dirname(sqliteFilePath), { recursive: true });
 }
 
+const asBool = (value: string | undefined, fallback = false) => {
+  if (value == null) return fallback;
+  const normalized = value.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+};
+
+const buildMysqlConnection = () => {
+  const useSsl = asBool(process.env.DB_SSL, false);
+  const rejectUnauthorized = asBool(process.env.DB_SSL_REJECT_UNAUTHORIZED, true);
+
+  let baseConnection: {
+    host?: string;
+    user?: string;
+    password?: string;
+    database?: string;
+    port?: number;
+  };
+
+  if (process.env.DB_URL) {
+    const parsed = new URL(process.env.DB_URL);
+    baseConnection = {
+      host: parsed.hostname,
+      user: decodeURIComponent(parsed.username),
+      password: decodeURIComponent(parsed.password),
+      database: parsed.pathname.replace(/^\//, ''),
+      port: parsed.port ? Number(parsed.port) : 3306,
+    };
+  } else {
+    baseConnection = {
+      host: process.env.DB_HOST,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+      port: Number(process.env.DB_PORT) || 3306,
+    };
+  }
+
+  if (useSsl) {
+    return {
+      ...baseConnection,
+      ssl: { rejectUnauthorized },
+    };
+  }
+
+  return baseConnection;
+};
+
 const db = knex({
   client: dbClient,
   connection:
-    dbClient === 'mysql' || dbClient === 'mysql2'
-      ? process.env.DB_URL
-        ? process.env.DB_URL
-        : {
-            host: process.env.DB_HOST,
-            user: process.env.DB_USER,
-            password: process.env.DB_PASSWORD,
-            database: process.env.DB_NAME,
-            port: Number(process.env.DB_PORT) || 3306,
-          }
+    isMysqlClient
+      ? buildMysqlConnection()
       : {
           filename: sqliteFilePath,
         },
