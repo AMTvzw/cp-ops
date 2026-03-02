@@ -113,6 +113,35 @@ npm run build
 
 This creates the frontend build in `dist/`.
 
+## Deploy on Vercel
+
+This repository now includes:
+- `vercel.json` (routes all requests to `api/index.ts`)
+- `api/index.ts` (serverless entrypoint)
+
+Required Vercel environment variables:
+
+```env
+NODE_ENV=production
+SESSION_SECRET=replace-with-a-long-random-secret-min-32
+DEFAULT_ROOT_USERNAME=root
+DEFAULT_ROOT_PASSWORD=replace-this-password
+
+DB_CLIENT=mysql2
+DB_HOST=your-db-host
+DB_PORT=3306
+DB_USER=your-db-user
+DB_PASSWORD=your-db-password
+DB_NAME=your-db-name
+DB_SSL=true
+DB_SSL_REJECT_UNAUTHORIZED=true
+```
+
+Notes:
+- Vercel filesystem is ephemeral; uploads default to `/tmp/uploads` in this setup.
+- For persistent files (logos/uploads), use external object storage if needed.
+- If your DB provider uses a custom CA chain, temporarily set `DB_SSL_REJECT_UNAUTHORIZED=false` while validating certificate setup.
+
 ## Run with Docker
 
 ### Build image

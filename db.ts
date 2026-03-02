@@ -7,10 +7,11 @@ const defaultTeamTypes = ['Terrein', 'Interventie', 'DGH', 'NDPA', 'Dienstleidin
 
 const dbClient = process.env.DB_CLIENT || 'sqlite3';
 const isMysqlClient = dbClient === 'mysql' || dbClient === 'mysql2';
+const defaultSqliteFilename = process.env.VERCEL ? '/tmp/cp_ops.sqlite' : 'data/cp_ops.sqlite';
 
 const sqliteFilePath = path.resolve(
   process.cwd(),
-  process.env.DB_FILENAME || 'data/cp_ops.sqlite',
+  process.env.DB_FILENAME || defaultSqliteFilename,
 );
 
 if (dbClient === 'sqlite3') {

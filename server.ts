@@ -2,9 +2,10 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import fs from "fs/promises";
+import { fileURLToPath } from "url";
 import bcrypt from "bcryptjs";
 import session from "express-session";
-import db, { initDb } from "./db.js";
+import db, { initDb } from "./db";
 
 const defaultTeamTypes = ["Terrein", "Interventie", "DGH", "NDPA", "Dienstleiding"];
 
@@ -17,7 +18,7 @@ declare module 'express-session' {
   }
 }
 
-async function startServer() {
+export async function createApp() {
   const isProduction = process.env.NODE_ENV === "production";
   const defaultRootUsername = process.env.DEFAULT_ROOT_USERNAME || "root";
   const defaultRootPassword = process.env.DEFAULT_ROOT_PASSWORD;
@@ -84,8 +85,10 @@ async function startServer() {
     next();
   });
 
-  const PORT = Number(process.env.PORT) || 31987;
   const redisUrl = process.env.REDIS_URL;
+  const uploadsRoot = process.env.UPLOAD_DIR
+    ? path.resolve(process.env.UPLOAD_DIR)
+    : (process.env.VERCEL ? "/tmp/uploads" : path.join(process.cwd(), "uploads"));
 
   type RateLimitOptions = {
     windowMs: number;
@@ -2123,7 +2126,7 @@ async function startServer() {
       .replace(/^-+|-+$/g, "")
       .slice(0, 40) || "logo";
     const fileName = `${safeBaseName}-${Date.now()}.${ext}`;
-    const uploadDir = path.join(process.cwd(), "uploads", "branding");
+    const uploadDir = path.join(uploadsRoot, "branding");
     await fs.mkdir(uploadDir, { recursive: true });
     await fs.writeFile(path.join(uploadDir, fileName), buffer);
 
@@ -2133,7 +2136,7 @@ async function startServer() {
     res.json({ url: logoUrl });
   });
 
-  app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+  app.use("/uploads", express.static(uploadsRoot));
 
   // Catch-all for API routes to prevent falling through to SPA fallback
   app.all("/api/*", (req, res) => {
@@ -2154,12 +2157,25 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  return app;
 }
 
-startServer().catch(err => {
-  console.error("Failed to start server:", err);
-  process.exit(1);
-});
+const isDirectRun = (() => {
+  const entryFile = process.argv[1];
+  if (!entryFile) return false;
+  return fileURLToPath(import.meta.url) === path.resolve(entryFile);
+})();
+
+if (isDirectRun) {
+  const PORT = Number(process.env.PORT) || 31987;
+  createApp()
+    .then((app) => {
+      app.listen(PORT, "0.0.0.0", () => {
+        console.log(`Server running on http://localhost:${PORT}`);
+      });
+    })
+    .catch((err) => {
+      console.error("Failed to start server:", err);
+      process.exit(1);
+    });
+}
