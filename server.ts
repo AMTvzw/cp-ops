@@ -199,14 +199,35 @@ export async function createApp() {
     const mutating = req.method === "POST" || req.method === "PUT" || req.method === "PATCH" || req.method === "DELETE";
     if (!mutating) return next();
 
-    const host = String(req.get("host") || "");
+    const normalizeHost = (value: string) =>
+      value
+        .trim()
+        .toLowerCase()
+        .replace(/^https?:\/\//, "")
+        .replace(/\/.*$/, "")
+        .replace(/:80$/, "")
+        .replace(/:443$/, "");
+
+    const rawHost = String(req.get("host") || "");
+    const rawForwardedHost = String(req.get("x-forwarded-host") || "");
+    const forwardedHosts = rawForwardedHost
+      .split(",")
+      .map((h) => normalizeHost(h))
+      .filter(Boolean);
+    const allowedHosts = new Set<string>([normalizeHost(rawHost), ...forwardedHosts].filter(Boolean));
+
     const origin = req.get("origin");
     const referer = req.get("referer");
+    const secFetchSite = String(req.get("sec-fetch-site") || "").toLowerCase();
 
     const sameHost = (value: string) => {
       try {
         const parsed = new URL(value);
-        return parsed.host === host && (parsed.protocol === "http:" || parsed.protocol === "https:");
+        const originHost = normalizeHost(parsed.host);
+        return (
+          allowedHosts.has(originHost) &&
+          (parsed.protocol === "http:" || parsed.protocol === "https:")
+        );
       } catch {
         return false;
       }
@@ -227,6 +248,9 @@ export async function createApp() {
     }
 
     if (req.session?.userId) {
+      if (secFetchSite === "same-origin" || secFetchSite === "same-site" || secFetchSite === "none") {
+        return next();
+      }
       return res.status(403).json({ error: "Missing origin headers" });
     }
 
