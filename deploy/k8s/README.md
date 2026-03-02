@@ -9,7 +9,7 @@ Edit:
 ## 2. Apply base resources
 
 ```bash
-kubectl apply -k k8s
+kubectl apply -k deploy/k8s
 ```
 
 ## 3. Optional ingress
@@ -17,7 +17,7 @@ kubectl apply -k k8s
 Edit host in `ingress-optional.yaml`, then apply:
 
 ```bash
-kubectl apply -f k8s/ingress-optional.yaml -n cp-ops
+kubectl apply -f deploy/k8s/ingress-optional.yaml -n cp-ops
 ```
 
 ## 4. Optional Redis
@@ -25,6 +25,6 @@ kubectl apply -f k8s/ingress-optional.yaml -n cp-ops
 If you enable Redis-backed rate limiting, set `REDIS_URL` in `configmap.yaml` and apply:
 
 ```bash
-kubectl apply -f k8s/redis-optional.yaml -n cp-ops
+kubectl apply -f deploy/k8s/redis-optional.yaml -n cp-ops
 kubectl rollout restart deployment/cp-ops -n cp-ops
 ```

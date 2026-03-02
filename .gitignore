@@ -8,3 +8,5 @@ coverage/
 *.sqlite3
 .env*
 !.env.example
+data/
+uploads/

@@ -7,6 +7,5 @@ data
 uploads
 .env
 .env.*
-Dockerfile*
-docker-compose*.yml
-k8s/
+deploy/k8s/
+deploy/docker/docker-compose*.yml

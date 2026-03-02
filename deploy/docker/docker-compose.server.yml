@@ -1,12 +1,12 @@
 services:
   app:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
     image: cp-ops:latest
     container_name: cp-ops
     env_file:
-      - .env
+      - ../../.env
     environment:
       NODE_ENV: production
       PORT: "31987"
@@ -15,8 +15,8 @@ services:
     ports:
       - "31987:31987"
     volumes:
-      - ./data:/app/data
-      - ./uploads:/app/uploads
+      - ../../data:/app/data
+      - ../../uploads:/app/uploads
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:31987/api/settings"]
