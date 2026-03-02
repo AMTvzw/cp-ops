@@ -135,11 +135,12 @@ DB_PASSWORD=your-db-password
 DB_NAME=your-db-name
 DB_SSL=true
 DB_SSL_REJECT_UNAUTHORIZED=true
+UPLOAD_STORAGE=db
 ```
 
 Notes:
-- Vercel filesystem is ephemeral; uploads default to `/tmp/uploads` in this setup.
-- For persistent files (logos/uploads), use external object storage if needed.
+- With `UPLOAD_STORAGE=db`, logo uploads are persisted in MariaDB/MySQL and served via `/api/uploads/:id`.
+- If you set `UPLOAD_STORAGE=fs`, Vercel writes to ephemeral storage (`/tmp/uploads`).
 - If your DB provider uses a custom CA chain, temporarily set `DB_SSL_REJECT_UNAUTHORIZED=false` while validating certificate setup.
 
 ## Run with Docker

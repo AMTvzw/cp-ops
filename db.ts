@@ -321,6 +321,18 @@ export async function initDb() {
     ]);
   }
 
+  // Uploaded Assets Table
+  if (!await db.schema.hasTable('uploaded_assets')) {
+    await db.schema.createTable('uploaded_assets', (table) => {
+      table.increments('id').primary();
+      table.string('scope').notNullable().defaultTo('branding');
+      table.string('mime').notNullable();
+      table.specificType('content', 'longblob').notNullable();
+      table.timestamp('created_at').defaultTo(db.fn.now());
+      table.index(['scope']);
+    });
+  }
+
   const defaultSettings: Record<string, string> = {
     app_name: 'CP-OPS',
     primary_color: '#2563eb',

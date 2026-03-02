@@ -89,6 +89,8 @@ export async function createApp() {
   const uploadsRoot = process.env.UPLOAD_DIR
     ? path.resolve(process.env.UPLOAD_DIR)
     : (process.env.VERCEL ? "/tmp/uploads" : path.join(process.cwd(), "uploads"));
+  const uploadStorage = (process.env.UPLOAD_STORAGE || (process.env.VERCEL ? "db" : "fs")).toLowerCase();
+  const useDbUploads = uploadStorage === "db";
 
   type RateLimitOptions = {
     windowMs: number;
@@ -2125,15 +2127,50 @@ export async function createApp() {
       .replace(/[^a-z0-9-_]+/g, "-")
       .replace(/^-+|-+$/g, "")
       .slice(0, 40) || "logo";
-    const fileName = `${safeBaseName}-${Date.now()}.${ext}`;
-    const uploadDir = path.join(uploadsRoot, "branding");
-    await fs.mkdir(uploadDir, { recursive: true });
-    await fs.writeFile(path.join(uploadDir, fileName), buffer);
 
-    const logoUrl = `/uploads/branding/${fileName}`;
+    let logoUrl: string;
+    if (useDbUploads) {
+      const [assetId] = await db("uploaded_assets").insert({
+        scope: "branding",
+        mime,
+        content: buffer,
+      });
+      logoUrl = `/api/uploads/${assetId}`;
+    } else {
+      const fileName = `${safeBaseName}-${Date.now()}.${ext}`;
+      const uploadDir = path.join(uploadsRoot, "branding");
+      await fs.mkdir(uploadDir, { recursive: true });
+      await fs.writeFile(path.join(uploadDir, fileName), buffer);
+      logoUrl = `/uploads/branding/${fileName}`;
+    }
+
     await db("settings").where({ key: "logo_url" }).update({ value: logoUrl });
 
     res.json({ url: logoUrl });
+  });
+
+  app.get("/api/uploads/:id", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: "Ongeldig upload id" });
+    }
+
+    const asset = await db("uploaded_assets")
+      .where({ id })
+      .select("id", "mime", "content")
+      .first();
+
+    if (!asset) {
+      return res.status(404).json({ error: "Upload niet gevonden" });
+    }
+
+    const content = Buffer.isBuffer(asset.content)
+      ? asset.content
+      : Buffer.from(asset.content);
+
+    res.setHeader("Content-Type", String(asset.mime || "application/octet-stream"));
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    return res.send(content);
   });
 
   app.use("/uploads", express.static(uploadsRoot));
