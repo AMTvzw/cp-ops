@@ -113,6 +113,24 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     root.style.setProperty('--app-danger-hover', settings.danger_hover_color || settings.danger_color);
   }, [settings]);
 
+  useEffect(() => {
+    if (!settings.logo_url) return;
+
+    const applyFavicon = (rel: string) => {
+      let link = document.head.querySelector<HTMLLinkElement>(`link[rel="${rel}"]`);
+      if (!link) {
+        link = document.createElement('link');
+        link.rel = rel;
+        document.head.appendChild(link);
+      }
+      link.href = settings.logo_url;
+    };
+
+    applyFavicon('icon');
+    applyFavicon('shortcut icon');
+    applyFavicon('apple-touch-icon');
+  }, [settings.logo_url]);
+
   return (
     <UserContext.Provider value={{ user, settings, loading, login, logout, hasRole, updateSettings }}>
       {children}
