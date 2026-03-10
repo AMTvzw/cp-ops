@@ -6,10 +6,12 @@ import {
   AlertCircle, Download, Send, Trash2, UserPlus, Pencil, Save, X,
   Building2, Phone, LogOut, Megaphone
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
 import { nl } from 'date-fns/locale';
 import { useUser, Role } from '../contexts/UserContext';
+import { fetchJsonSafe } from '../utils/http';
 
 interface Event {
   id: number;
@@ -124,13 +126,41 @@ interface EventFormState {
   description: string;
 }
 
+type EventTab = 'info' | 'interventions' | 'team_status' | 'teams' | 'logs' | 'settings';
+
+type EventTabConfig = {
+  id: EventTab;
+  label: string;
+  icon: LucideIcon;
+  roles?: Role[];
+};
+
+const EVENT_TABS: EventTabConfig[] = [
+  { id: 'info', label: 'Evenement Info', icon: FileText },
+  { id: 'interventions', label: 'Interventies', icon: Activity },
+  { id: 'team_status', label: 'Ploegstatus', icon: Users },
+  { id: 'teams', label: 'Ploegen', icon: Users },
+  { id: 'logs', label: 'Logboek', icon: FileText },
+  { id: 'settings', label: 'Instellingen', icon: Settings, roles: ['ROOT', 'ADMIN'] },
+];
+
+const isEventAssignee = (value: unknown): value is EventAssignee => {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<EventAssignee>;
+  return (
+    typeof candidate.id === 'number'
+    && typeof candidate.username === 'string'
+    && (candidate.role === 'ROOT' || candidate.role === 'ADMIN' || candidate.role === 'OPERATOR' || candidate.role === 'VIEWER')
+  );
+};
+
 export default function EventDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { user, logout, hasRole, settings } = useUser();
   const isViewer = user?.role === 'VIEWER';
   const [event, setEvent] = useState<Event | null>(null);
-  const [activeTab, setActiveTab] = useState<'info' | 'interventions' | 'team_status' | 'teams' | 'logs' | 'settings'>('interventions');
+  const [activeTab, setActiveTab] = useState<EventTab>('interventions');
   const [settingsSubTab, setSettingsSubTab] = useState<'access' | 'team_types' | 'statuses'>('access');
   const [interventionTab, setInterventionTab] = useState<'open' | 'closed'>('open');
   const [interventionView, setInterventionView] = useState<'cards' | 'list'>('cards');
@@ -239,28 +269,34 @@ export default function EventDetail() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const fetchJson = async (url: string) => {
-        const res = await fetch(url);
-        if (res.status === 401) {
-          navigate('/');
-          return null;
-        }
-        if (!res.ok) return null;
-        const contentType = res.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-          return await res.json();
-        }
-        return null;
-      };
-
-      const [eventData, interData, teamData, teamTypeData, statusData, logUsersData] = await Promise.all([
-        fetchJson(`/api/events/${id}`),
-        fetchJson(`/api/events/${id}/interventions`),
-        fetchJson(`/api/events/${id}/teams`),
-        fetchJson(`/api/events/${id}/team-types`),
-        fetchJson(`/api/events/${id}/statuses`),
-        fetchJson(`/api/events/${id}/log-users`)
+      const [eventResult, interResult, teamResult, teamTypeResult, statusResult, logUsersResult] = await Promise.all([
+        fetchJsonSafe<Event>(`/api/events/${id}`),
+        fetchJsonSafe<Intervention[]>(`/api/events/${id}/interventions`),
+        fetchJsonSafe<Team[]>(`/api/events/${id}/teams`),
+        fetchJsonSafe<TeamType[]>(`/api/events/${id}/team-types`),
+        fetchJsonSafe<Status[]>(`/api/events/${id}/statuses`),
+        fetchJsonSafe<LogUser[]>(`/api/events/${id}/log-users`)
       ]);
+
+      const hasUnauthorized = [
+        eventResult,
+        interResult,
+        teamResult,
+        teamTypeResult,
+        statusResult,
+        logUsersResult,
+      ].some(({ response }) => response.status === 401);
+      if (hasUnauthorized) {
+        navigate('/');
+        return;
+      }
+
+      const eventData = eventResult.response.ok ? eventResult.data : null;
+      const interData = interResult.response.ok ? interResult.data : null;
+      const teamData = teamResult.response.ok ? teamResult.data : null;
+      const teamTypeData = teamTypeResult.response.ok ? teamTypeResult.data : null;
+      const statusData = statusResult.response.ok ? statusResult.data : null;
+      const logUsersData = logUsersResult.response.ok ? logUsersResult.data : null;
 
       if (eventData) {
         setEvent(eventData);
@@ -286,25 +322,26 @@ export default function EventDetail() {
         setTeamTypes([]);
         setNewTeam(prev => ({ ...prev, type: '' }));
       }
-      if (statusData) {
+      if (Array.isArray(statusData)) {
         setStatuses(statusData);
         if (statusData.length > 0) {
-          const busy = statusData.find((s: any) => Number(s.is_busy) === 1);
+          const busy = statusData.find((s) => Number(s.is_busy) === 1);
           setNewIntervention(prev => ({ ...prev, status_id: busy?.id || statusData[0].id }));
         }
       }
 
-      const eventAnnouncementRes = await fetch(`/api/events/${id}/announcement`);
-      if (eventAnnouncementRes.ok) {
-        const contentType = eventAnnouncementRes.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-          const data = await eventAnnouncementRes.json();
-          setEventAnnouncement({
-            message: data?.message || '',
-            bg_color: data?.bg_color || '#ef4444',
-            is_active: !!data?.is_active,
-          });
-        }
+      const eventAnnouncementResult = await fetchJsonSafe<{
+        message?: string;
+        bg_color?: string;
+        is_active?: unknown;
+      }>(`/api/events/${id}/announcement`);
+      if (eventAnnouncementResult.response.ok && eventAnnouncementResult.data) {
+        const data = eventAnnouncementResult.data;
+        setEventAnnouncement({
+          message: data.message || '',
+          bg_color: data.bg_color || '#ef4444',
+          is_active: !!data.is_active,
+        });
       }
       if (Array.isArray(logUsersData)) {
         setLogUsers(logUsersData);
@@ -320,13 +357,15 @@ export default function EventDetail() {
         if (usersRes.ok) {
           const usersData = await usersRes.json();
           const scopedUsers = Array.isArray(usersData)
-            ? usersData.filter((u: any) => u.role === 'OPERATOR' || u.role === 'VIEWER')
+            ? usersData.filter(isEventAssignee).filter((u) => u.role === 'OPERATOR' || u.role === 'VIEWER')
             : [];
           setEventAssignableUsers(scopedUsers);
         }
         if (assignedRes.ok) {
           const assignedData = await assignedRes.json();
-          const ids = Array.isArray(assignedData) ? assignedData.map((u: any) => Number(u.id)) : [];
+          const ids = Array.isArray(assignedData)
+            ? assignedData.filter(isEventAssignee).map((u) => Number(u.id))
+            : [];
           setEventAssignedUserIds(ids);
         }
       }
@@ -1101,22 +1140,15 @@ export default function EventDetail() {
       </header>
 
       <nav className="flex border-b border-slate-200 mb-8 overflow-x-auto">
-        {[
-          { id: 'info', label: 'Evenement Info', icon: FileText },
-          { id: 'interventions', label: 'Interventies', icon: Activity },
-          { id: 'team_status', label: 'Ploegstatus', icon: Users },
-          { id: 'teams', label: 'Ploegen', icon: Users },
-          { id: 'logs', label: 'Logboek', icon: FileText },
-          { id: 'settings', label: 'Instellingen', icon: Settings, roles: ['ROOT', 'ADMIN'] },
-        ]
+        {EVENT_TABS
           .filter(tab => {
             if (isViewer) return tab.id === 'team_status';
-            return !tab.roles || hasRole(tab.roles as any);
+            return !tab.roles || hasRole(tab.roles);
           })
           .map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id as any)}
+            onClick={() => setActiveTab(tab.id)}
             className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
               activeTab === tab.id 
                 ? '' 

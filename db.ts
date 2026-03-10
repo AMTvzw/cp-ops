@@ -333,6 +333,33 @@ export async function initDb() {
     });
   }
 
+  // Persistent Sessions Table (for express-session store)
+  if (!await db.schema.hasTable('sessions')) {
+    await db.schema.createTable('sessions', (table) => {
+      table.string('sid').primary();
+      if (isMysqlClient) {
+        table.specificType('sess', 'longtext').notNullable();
+      } else {
+        table.text('sess').notNullable();
+      }
+      table.bigInteger('expires_at').notNullable();
+      table.timestamp('updated_at').defaultTo(db.fn.now());
+      table.index(['expires_at']);
+    });
+  } else {
+    if (!await db.schema.hasColumn('sessions', 'expires_at')) {
+      await db.schema.table('sessions', (table) => {
+        table.bigInteger('expires_at').notNullable().defaultTo(0);
+      });
+      await db('sessions').whereNull('expires_at').update({ expires_at: 0 });
+    }
+    if (!await db.schema.hasColumn('sessions', 'updated_at')) {
+      await db.schema.table('sessions', (table) => {
+        table.timestamp('updated_at').defaultTo(db.fn.now());
+      });
+    }
+  }
+
   const defaultSettings: Record<string, string> = {
     app_name: 'CP-OPS',
     primary_color: '#2563eb',

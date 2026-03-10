@@ -6,8 +6,26 @@ import { fileURLToPath } from "url";
 import bcrypt from "bcryptjs";
 import session from "express-session";
 import db, { initDb } from "./db";
+import { KnexSessionStore } from "./sessionStore";
 
 const defaultTeamTypes = ["Terrein", "Interventie", "DGH", "NDPA", "Dienstleiding"];
+
+const toPositiveInt = (value: unknown): number | null => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  const normalized = Math.trunc(parsed);
+  return normalized > 0 ? normalized : null;
+};
+
+const toPositiveIntArray = (value: unknown): number[] => {
+  if (!Array.isArray(value)) return [];
+  const unique = new Set<number>();
+  for (const entry of value) {
+    const parsed = toPositiveInt(entry);
+    if (parsed != null) unique.add(parsed);
+  }
+  return [...unique];
+};
 
 // Extend express-session to include custom properties
 declare module 'express-session' {
@@ -20,6 +38,11 @@ declare module 'express-session' {
 
 export async function createApp() {
   const isProduction = process.env.NODE_ENV === "production";
+  const configuredSessionIdleTimeoutMinutes = Number(process.env.SESSION_IDLE_TIMEOUT_MINUTES);
+  const sessionIdleTimeoutMinutes = Number.isFinite(configuredSessionIdleTimeoutMinutes) && configuredSessionIdleTimeoutMinutes > 0
+    ? configuredSessionIdleTimeoutMinutes
+    : 30;
+  const sessionIdleTimeoutMs = Math.trunc(sessionIdleTimeoutMinutes * 60 * 1000);
   const defaultRootUsername = process.env.DEFAULT_ROOT_USERNAME || "root";
   const defaultRootPassword = process.env.DEFAULT_ROOT_PASSWORD;
   const configuredSessionSecret = process.env.SESSION_SECRET;
@@ -55,16 +78,20 @@ export async function createApp() {
   // Proxy trust is often needed for secure cookies behind proxies
   app.set('trust proxy', 1);
 
+  const sessionStore = new KnexSessionStore(db, sessionIdleTimeoutMs);
+
   app.use(session({
+    store: sessionStore,
     secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
+    rolling: true,
     name: 'cp_ops_session',
     cookie: { 
       secure: isProduction,
       sameSite: isProduction ? 'none' : 'lax',
       httpOnly: true,
-      maxAge: 24 * 60 * 60 * 1000 // 24 hours
+      maxAge: sessionIdleTimeoutMs
     }
   }));
 
@@ -305,7 +332,7 @@ export async function createApp() {
         .where({ intervention_id: interventionId })
         .whereNull("ended_at")
         .select("team_id");
-      const openSet = new Set(openRows.map((r: any) => Number(r.team_id)));
+      const openSet = new Set(openRows.map((r: any) => toPositiveInt(r.team_id)).filter((id): id is number => id != null));
 
       const links = await trx("intervention_teams")
         .where({ intervention_id: interventionId })
@@ -901,7 +928,7 @@ export async function createApp() {
     if (!event) return res.status(404).json({ error: "Event not found" });
 
     const userIds = Array.isArray(req.body?.user_ids)
-      ? req.body.user_ids.map((v: any) => Number(v)).filter(Boolean)
+      ? toPositiveIntArray(req.body.user_ids)
       : [];
 
     const allowedUsers = await db("users")
@@ -918,7 +945,9 @@ export async function createApp() {
         .whereIn("u.role", ["OPERATOR", "VIEWER"])
         .select("eua.user_id");
 
-      const existingIds = existingAccessUsers.map((r: any) => Number(r.user_id));
+      const existingIds = existingAccessUsers
+        .map((r: any) => toPositiveInt(r.user_id))
+        .filter((id): id is number => id != null);
       const toDelete = existingIds.filter(id => !allowedIds.includes(id));
       const toInsert = allowedIds.filter(id => !existingIds.includes(id));
 
@@ -1426,7 +1455,7 @@ export async function createApp() {
     try {
       const interventionId = await db.transaction(async trx => {
         const requestedTeamIds = Array.isArray(team_ids)
-          ? team_ids.map((v: any) => Number(v)).filter(Boolean)
+          ? toPositiveIntArray(team_ids)
           : [];
 
         const candidateTeams = requestedTeamIds.length > 0
@@ -1526,8 +1555,8 @@ export async function createApp() {
       if (!intervention) return res.status(404).json({ error: "Interventie niet gevonden" });
       if (!await ensureEventAccess(req, res, intervention.event_id)) return;
 
-      const addTeamIds = Array.isArray(add_team_ids) ? add_team_ids.map((v: any) => Number(v)).filter(Boolean) : [];
-      const removeTeamIds = Array.isArray(remove_team_ids) ? remove_team_ids.map((v: any) => Number(v)).filter(Boolean) : [];
+      const addTeamIds = toPositiveIntArray(add_team_ids);
+      const removeTeamIds = toPositiveIntArray(remove_team_ids);
 
       await db.transaction(async trx => {
         if (typeof location === "string" && location !== intervention.location) {
@@ -1592,7 +1621,11 @@ export async function createApp() {
             .where({ intervention_id: intervention.id })
             .whereIn("team_id", addTeamIds)
             .select("team_id");
-          const existingSet = new Set(existingLinks.map((r: any) => Number(r.team_id)));
+          const existingSet = new Set(
+            existingLinks
+              .map((r: any) => toPositiveInt(r.team_id))
+              .filter((teamId): teamId is number => teamId != null)
+          );
 
           const candidateTeams = await trx("teams")
             .where({ event_id: intervention.event_id })

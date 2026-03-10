@@ -6,6 +6,7 @@ import { format } from 'date-fns';
 import { nl } from 'date-fns/locale';
 import { useUser } from '../contexts/UserContext';
 import PasswordChangeButton from './PasswordChangeButton';
+import { fetchJsonSafe } from '../utils/http';
 
 interface Event {
   id: number;
@@ -40,14 +41,8 @@ export default function Dashboard() {
 
   const fetchEvents = async () => {
     try {
-      const res = await fetch('/api/events');
-      if (res.ok) {
-        const contentType = res.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-          const data = await res.json();
-          setEvents(data);
-        }
-      }
+      const { response, data } = await fetchJsonSafe<Event[]>('/api/events');
+      if (response.ok && Array.isArray(data)) setEvents(data);
     } catch (err) {
       console.error('Error fetching events:', err);
     }
@@ -55,13 +50,17 @@ export default function Dashboard() {
 
   const fetchGlobalAnnouncement = async () => {
     try {
-      const res = await fetch('/api/announcements');
-      if (res.ok) {
-        const contentType = res.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-          const data = await res.json();
-          setGlobalAnnouncement({ ...data, is_active: !!data.is_active });
-        }
+      const { response, data } = await fetchJsonSafe<{
+        message?: string;
+        bg_color?: string;
+        is_active?: unknown;
+      }>('/api/announcements');
+      if (response.ok && data) {
+        setGlobalAnnouncement({
+          message: data.message || '',
+          bg_color: data.bg_color || '#ef4444',
+          is_active: !!data.is_active,
+        });
       }
     } catch (err) {
       console.error('Error fetching global announcement:', err);

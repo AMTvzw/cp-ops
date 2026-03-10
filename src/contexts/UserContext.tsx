@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { fetchJsonSafe } from '../utils/http';
 
 export type Role = 'ROOT' | 'ADMIN' | 'OPERATOR' | 'VIEWER';
 
@@ -54,27 +55,16 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const fetchJson = async (url: string) => {
-      try {
-        const res = await fetch(url);
-        if (!res.ok) return null;
-        const contentType = res.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-          return await res.json();
-        }
-        return null;
-      } catch (err) {
-        console.error(`Error fetching ${url}:`, err);
-        return null;
-      }
-    };
-
     Promise.all([
-      fetchJson('/api/me'),
-      fetchJson('/api/settings')
+      fetchJsonSafe<User>('/api/me'),
+      fetchJsonSafe<Partial<Settings>>('/api/settings')
     ]).then(([userData, settingsData]) => {
-      if (userData) setUser(userData);
-      if (settingsData) setSettings(prev => ({ ...prev, ...settingsData }));
+      if (userData.response.ok && userData.data) setUser(userData.data);
+      if (settingsData.response.ok && settingsData.data) {
+        setSettings(prev => ({ ...prev, ...settingsData.data }));
+      }
+    }).catch((err) => {
+      console.error('Error loading user context:', err);
     }).finally(() => setLoading(false));
   }, []);
 
