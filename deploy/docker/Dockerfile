@@ -14,6 +14,7 @@ ENV NODE_ENV=production \
     PORT=31987 \
     DB_CLIENT=sqlite3 \
     DB_FILENAME=/app/data/cp_ops.sqlite \
+    SESSION_IDLE_TIMEOUT_MINUTES=30 \
     UPLOAD_STORAGE=fs
 
 EXPOSE 31987
