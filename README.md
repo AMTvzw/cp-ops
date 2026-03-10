@@ -181,6 +181,29 @@ Direct server command:
 docker compose -f deploy/docker/docker-compose.server.yml up -d --build
 ```
 
+## One-Command Raspberry Pi Setup (Auto-start on Boot)
+
+Run this on the Raspberry Pi:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AMTvzw/cp-ops/main/deploy/pi/bootstrap.sh | sudo bash
+```
+
+What it does:
+- Installs Docker (if needed)
+- Clones/updates CP-OPS in `/opt/CP-OPS`
+- Creates `.env` from `.env.example` (if missing)
+- Auto-generates `SESSION_SECRET` and `DEFAULT_ROOT_PASSWORD` if placeholders are found
+- Creates/enables a systemd service so the app starts automatically after power-on
+
+Optional parameters:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AMTvzw/cp-ops/main/deploy/pi/bootstrap.sh | sudo bash -s -- \
+  --app-dir /opt/CP-OPS \
+  --repo-url https://github.com/AMTvzw/cp-ops.git
+```
+
 ## Run with Kubernetes
 
 Kubernetes manifests are in the `deploy/k8s/` folder.
