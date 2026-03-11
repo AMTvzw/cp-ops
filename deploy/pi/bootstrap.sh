@@ -23,6 +23,41 @@ What this script does:
 EOF
 }
 
+disable_ntop_repo_if_present() {
+  local found=0
+  local file
+
+  while IFS= read -r file; do
+    [[ -z "${file}" ]] && continue
+    found=1
+    if [[ -f "${file}" ]]; then
+      mv "${file}" "${file}.disabled"
+      echo "Disabled problematic apt source: ${file}"
+    fi
+  done < <(grep -Ril "packages.ntop.org" /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true)
+
+  if [[ "${found}" -eq 1 ]]; then
+    return 0
+  fi
+  return 1
+}
+
+safe_apt_update() {
+  if apt-get update; then
+    return
+  fi
+
+  echo "apt-get update failed. Checking for broken ntop repository entries..."
+  if disable_ntop_repo_if_present; then
+    echo "Retrying apt-get update after disabling ntop source..."
+    apt-get update
+    return
+  fi
+
+  echo "apt-get update failed and no ntop source was found to disable." >&2
+  exit 1
+}
+
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
     echo "Run as root (use sudo)." >&2
@@ -71,7 +106,7 @@ ensure_compose_plugin() {
 
   echo "Docker Compose plugin not available. Installing package..."
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update
+    safe_apt_update
     apt-get install -y docker-compose-plugin
   else
     echo "Could not install docker compose plugin automatically on this distro." >&2
@@ -93,7 +128,7 @@ ensure_base_tools() {
   fi
 
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update
+    safe_apt_update
     apt-get install -y "${missing[@]}"
   else
     echo "Missing required tools: ${missing[*]}" >&2
