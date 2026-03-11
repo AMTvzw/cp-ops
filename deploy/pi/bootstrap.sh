@@ -4,6 +4,7 @@ set -euo pipefail
 APP_DIR_DEFAULT="/opt/CP-OPS"
 SERVICE_NAME="cp-ops.service"
 COMPOSE_FILE="deploy/docker/docker-compose.server.yml"
+COMPOSE_PI_OVERRIDE_FILE="deploy/docker/docker-compose.pi.override.yml"
 APP_DIR="$APP_DIR_DEFAULT"
 REPO_URL="${REPO_URL:-https://github.com/AMTvzw/cp-ops.git}"
 
@@ -19,6 +20,7 @@ What this script does:
   - Creates .env from .env.example (if missing)
   - Generates SESSION_SECRET and DEFAULT_ROOT_PASSWORD if missing/placeholder
   - Creates and enables a systemd service for automatic app start
+  - Forces Raspberry Pi Docker builds to use deploy/docker/Dockerfile.raspberrypi
   - Starts the app with Docker Compose
 EOF
 }
@@ -189,6 +191,15 @@ seed_required_env() {
   fi
 }
 
+write_pi_compose_override() {
+  cat > "${APP_DIR}/${COMPOSE_PI_OVERRIDE_FILE}" <<'EOF'
+services:
+  app:
+    build:
+      dockerfile: deploy/docker/Dockerfile.raspberrypi
+EOF
+}
+
 write_systemd_service() {
   cat > "/etc/systemd/system/${SERVICE_NAME}" <<EOF
 [Unit]
@@ -200,8 +211,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=${APP_DIR}
-ExecStart=/usr/bin/docker compose -f ${COMPOSE_FILE} up -d --build --pull always
-ExecStop=/usr/bin/docker compose -f ${COMPOSE_FILE} down
+ExecStart=/usr/bin/docker compose -f ${COMPOSE_FILE} -f ${COMPOSE_PI_OVERRIDE_FILE} up -d --build --pull always
+ExecStop=/usr/bin/docker compose -f ${COMPOSE_FILE} -f ${COMPOSE_PI_OVERRIDE_FILE} down
 RemainAfterExit=yes
 TimeoutStartSec=0
 
@@ -237,6 +248,7 @@ main() {
   clone_or_update_repo
   ensure_env_file
   seed_required_env
+  write_pi_compose_override
   write_systemd_service
   enable_and_start_app
   print_summary
