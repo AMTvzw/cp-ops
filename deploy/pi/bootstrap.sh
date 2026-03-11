@@ -5,13 +5,14 @@ APP_DIR_DEFAULT="/opt/CP-OPS"
 SERVICE_NAME="cp-ops.service"
 COMPOSE_FILE="deploy/docker/docker-compose.server.yml"
 COMPOSE_PI_OVERRIDE_FILE="deploy/docker/docker-compose.pi.override.yml"
+PI_HOST_PORT_DEFAULT="80"
 APP_DIR="$APP_DIR_DEFAULT"
 REPO_URL="${REPO_URL:-https://github.com/AMTvzw/cp-ops.git}"
 
 usage() {
   cat <<'EOF'
 Usage:
-  sudo bash deploy/pi/bootstrap.sh [--app-dir /opt/CP-OPS] [--repo-url <git-url>]
+  sudo bash deploy/pi/bootstrap.sh [--app-dir /opt/CP-OPS] [--repo-url <git-url>] [--host-port 80]
 
 What this script does:
   - Installs Docker (if missing)
@@ -21,6 +22,9 @@ What this script does:
   - Generates SESSION_SECRET and DEFAULT_ROOT_PASSWORD if missing/placeholder
   - Creates and enables a systemd service for automatic app start
   - Forces Raspberry Pi Docker builds to use deploy/docker/Dockerfile.raspberrypi
+  - Exposes the app on Raspberry Pi host port 80 by default
+  - Allows the host port in UFW, nftables, or iptables/ip6tables (when available)
+  - Only stops listeners that actually block that port
   - Starts the app with Docker Compose
 EOF
 }
@@ -76,6 +80,10 @@ parse_args() {
         ;;
       --repo-url)
         REPO_URL="${2:?Missing value for --repo-url}"
+        shift 2
+        ;;
+      --host-port)
+        PI_HOST_PORT_DEFAULT="${2:?Missing value for --host-port}"
         shift 2
         ;;
       -h|--help)
@@ -143,6 +151,97 @@ ensure_docker_service() {
   systemctl start docker
 }
 
+ensure_firewall_port_allowed() {
+  local port="$1"
+  local allowed=0
+
+  if command -v ufw >/dev/null 2>&1; then
+    local status
+    status="$(ufw status 2>/dev/null || true)"
+    if echo "${status}" | head -n1 | grep -qi "Status: active"; then
+      ufw allow "${port}/tcp" >/dev/null 2>&1 || ufw allow "${port}/tcp"
+      echo "UFW allow ${port}/tcp applied."
+      allowed=1
+    fi
+  fi
+
+  if command -v nft >/dev/null 2>&1; then
+    if nft list chain inet filter input >/dev/null 2>&1; then
+      if ! nft list chain inet filter input 2>/dev/null | grep -Eq "tcp dport ${port} .* accept|tcp dport \\{[^}]*${port}[^}]*\\} .* accept"; then
+        nft add rule inet filter input tcp dport "${port}" counter accept >/dev/null 2>&1 || true
+      fi
+      echo "nftables allow tcp/${port} ensured in inet/filter/input."
+      allowed=1
+    fi
+  fi
+
+  if command -v iptables >/dev/null 2>&1; then
+    iptables -C INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1 \
+      || iptables -I INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1 \
+      || true
+    if iptables -C INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1; then
+      echo "iptables allow tcp/${port} ensured."
+      allowed=1
+    fi
+  fi
+
+  if command -v ip6tables >/dev/null 2>&1; then
+    ip6tables -C INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1 \
+      || ip6tables -I INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1 \
+      || true
+    if ip6tables -C INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1; then
+      echo "ip6tables allow tcp/${port} ensured."
+      allowed=1
+    fi
+  fi
+
+  if [[ "${allowed}" -eq 0 ]]; then
+    echo "No active/recognized local firewall manager detected for auto-allow on port ${port}."
+  fi
+}
+
+stop_port_listeners() {
+  local port="$1"
+  if ! command -v ss >/dev/null 2>&1; then
+    return
+  fi
+
+  local pids
+  pids="$(
+    ss -ltnp "sport = :${port}" 2>/dev/null \
+      | awk -F'pid=' 'NF>1{for(i=2;i<=NF;i++){split($i,a,/[^0-9]/); if(a[1]!="") print a[1]}}' \
+      | sort -u
+  )"
+
+  if [[ -z "${pids}" ]]; then
+    return
+  fi
+
+  local pid comm
+  while IFS= read -r pid; do
+    [[ -z "${pid}" ]] && continue
+    comm="$(ps -p "${pid}" -o comm= 2>/dev/null | xargs || true)"
+    if [[ -z "${comm}" ]]; then
+      continue
+    fi
+
+    if systemctl list-unit-files "${comm}.service" --no-legend 2>/dev/null | grep -q "^${comm}\.service"; then
+      systemctl stop "${comm}.service" || true
+      systemctl disable "${comm}.service" || true
+      echo "Stopped and disabled ${comm}.service (listening on port ${port})"
+    else
+      kill -TERM "${pid}" 2>/dev/null || true
+      echo "Stopped process ${comm} (pid ${pid}) listening on port ${port}"
+    fi
+  done <<< "${pids}"
+}
+
+ensure_host_port_available() {
+  local port="$1"
+  ensure_firewall_port_allowed "${port}"
+  stop_port_listeners "${port}"
+}
+
 clone_or_update_repo() {
   if [[ -d "${APP_DIR}/.git" ]]; then
     echo "Updating existing repository in ${APP_DIR}..."
@@ -192,11 +291,15 @@ seed_required_env() {
 }
 
 write_pi_compose_override() {
-  cat > "${APP_DIR}/${COMPOSE_PI_OVERRIDE_FILE}" <<'EOF'
+  cat > "${APP_DIR}/${COMPOSE_PI_OVERRIDE_FILE}" <<EOF
 services:
   app:
     build:
       dockerfile: deploy/docker/Dockerfile.raspberrypi
+    environment:
+      PORT: 31987
+    ports:
+      - "${PI_HOST_PORT_DEFAULT}:31987"
 EOF
 }
 
@@ -245,6 +348,7 @@ main() {
   install_docker_if_needed
   ensure_compose_plugin
   ensure_docker_service
+  ensure_host_port_available "${PI_HOST_PORT_DEFAULT}"
   clone_or_update_repo
   ensure_env_file
   seed_required_env
