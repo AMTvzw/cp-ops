@@ -148,6 +148,10 @@ seed_required_env() {
   if grep -qE '^DEFAULT_ROOT_PASSWORD=$|^DEFAULT_ROOT_PASSWORD=replace.*$' "${env_file}" || ! grep -q '^DEFAULT_ROOT_PASSWORD=' "${env_file}"; then
     ensure_env_value "DEFAULT_ROOT_PASSWORD" "$(openssl rand -base64 18 | tr -d '=+/')"
   fi
+
+  if grep -qE '^SESSION_IDLE_TIMEOUT_MINUTES=$' "${env_file}" || ! grep -q '^SESSION_IDLE_TIMEOUT_MINUTES=' "${env_file}"; then
+    ensure_env_value "SESSION_IDLE_TIMEOUT_MINUTES" "30"
+  fi
 }
 
 write_systemd_service() {

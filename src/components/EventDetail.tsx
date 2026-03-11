@@ -222,7 +222,7 @@ export default function EventDetail() {
   const [savingEventAssignments, setSavingEventAssignments] = useState(false);
 
   useEffect(() => {
-    fetchData();
+    void fetchData();
   }, [id]);
 
   useEffect(() => {
@@ -266,8 +266,8 @@ export default function EventDetail() {
     return () => window.clearInterval(interval);
   }, []);
 
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = async ({ background = false }: { background?: boolean } = {}) => {
+    if (!background) setLoading(true);
     try {
       const [eventResult, interResult, teamResult, teamTypeResult, statusResult, logUsersResult] = await Promise.all([
         fetchJsonSafe<Event>(`/api/events/${id}`),
@@ -374,7 +374,7 @@ export default function EventDetail() {
     } catch (err) {
       console.error(err);
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   };
 
@@ -476,7 +476,7 @@ export default function EventDetail() {
     });
     setShowNewIntervention(false);
     setNewIntervention({ title: '', location: '', description: '', status_id: getDefaultInterventionStatusId(), team_ids: [] });
-    fetchData();
+    void fetchData({ background: true });
   };
 
   const beginEditIntervention = (inter: Intervention) => {
@@ -528,7 +528,7 @@ export default function EventDetail() {
     }
 
     cancelEditIntervention();
-    fetchData();
+    void fetchData({ background: true });
   };
 
   const handleUpdateTeamStatus = async (interId: number, teamId: number, statusId: number) => {
@@ -593,7 +593,7 @@ export default function EventDetail() {
     });
     setShowNewTeam(false);
     setNewTeam({ name: '', type: teamTypes[0]?.name || '' });
-    fetchData();
+    void fetchData({ background: true });
   };
 
   const handleAddTeamType = async (e: React.FormEvent) => {
@@ -614,7 +614,7 @@ export default function EventDetail() {
     }
 
     setNewTeamTypeName('');
-    fetchData();
+    void fetchData({ background: true });
   };
 
   const handleStartEditTeamType = (teamType: TeamType) => {
@@ -644,7 +644,7 @@ export default function EventDetail() {
     }
 
     handleCancelEditTeamType();
-    fetchData();
+    void fetchData({ background: true });
   };
 
   const handleDeleteTeamType = async (teamTypeId: number, name: string) => {
@@ -690,7 +690,7 @@ export default function EventDetail() {
       return;
     }
 
-    fetchData();
+    void fetchData({ background: true });
   };
 
   const handleAddMember = async (teamId: number, name: string, role: string) => {
@@ -699,7 +699,7 @@ export default function EventDetail() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, role })
     });
-    fetchData();
+    void fetchData({ background: true });
   };
 
   const handleSaveTeamName = async (teamId: number) => {
@@ -726,7 +726,7 @@ export default function EventDetail() {
       return;
     }
     setEditingTeamNameId(null);
-    fetchData();
+    void fetchData({ background: true });
   };
 
   const handleToggleTeamDeployed = async (teamId: number, isDeployed: boolean) => {
@@ -739,15 +739,15 @@ export default function EventDetail() {
     if (!res.ok) {
       const data = await res.json().catch(() => null);
       alert(data?.error || 'Ploeg bijwerken mislukt');
-      fetchData();
+      void fetchData({ background: true });
       return;
     }
-    fetchData();
+    void fetchData({ background: true });
   };
 
   const handleRemoveMember = async (memberId: number) => {
     await fetch(`/api/members/${memberId}`, { method: 'DELETE' });
-    fetchData();
+    void fetchData({ background: true });
   };
 
   const handleAddLog = async (e: React.FormEvent) => {
@@ -764,7 +764,7 @@ export default function EventDetail() {
     });
     setNewLog('');
     setNewLogContext({ team_id: '', intervention_id: '' });
-    fetchData();
+    void fetchData({ background: true });
   };
 
   const handleAddStatus = async (e: React.FormEvent) => {
@@ -775,7 +775,7 @@ export default function EventDetail() {
       body: JSON.stringify(newStatus)
     });
     setNewStatus({ name: '', color: '#3b82f6', is_closed: false, is_start: false, is_busy: false });
-    fetchData();
+    void fetchData({ background: true });
   };
 
   const handleAddInterventionMessage = async (interventionId: number) => {
@@ -835,7 +835,7 @@ export default function EventDetail() {
       alert(data?.error || 'Interventie verwijderen mislukt');
       return;
     }
-    fetchData();
+    void fetchData({ background: true });
   };
 
   const handleCloseEmptyIntervention = async (interventionId: number, title: string) => {
@@ -851,7 +851,7 @@ export default function EventDetail() {
       alert(data?.error || 'Interventie sluiten mislukt');
       return;
     }
-    fetchData();
+    void fetchData({ background: true });
   };
 
   const handleDeleteStatus = async (statusId: number, name: string) => {
@@ -907,7 +907,7 @@ export default function EventDetail() {
       alert(data?.error || 'Status verwijderen mislukt');
       return;
     }
-    fetchData();
+    void fetchData({ background: true });
   };
 
   const handleStartEditStatus = (status: Status) => {
@@ -934,7 +934,7 @@ export default function EventDetail() {
       return;
     }
     setEditingStatusId(null);
-    fetchData();
+    void fetchData({ background: true });
   };
 
   const handleCancelStatusEdit = () => {
@@ -1058,7 +1058,7 @@ export default function EventDetail() {
       return;
     }
     setShowEventAnnouncement(false);
-    fetchData();
+    void fetchData({ background: true });
   };
 
   if (loading) return <div className="p-8 text-center">Laden...</div>;
