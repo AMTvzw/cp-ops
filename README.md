@@ -151,6 +151,16 @@ Notes:
 docker build -f deploy/docker/Dockerfile -t cp-ops:latest .
 ```
 
+Alternative Dockerfiles:
+- Standard hosts (non-Raspberry Pi):
+```bash
+docker build -f deploy/docker/Dockerfile.standard -t cp-ops:latest .
+```
+- Raspberry Pi / ARM compatibility:
+```bash
+docker build -f deploy/docker/Dockerfile.raspberrypi -t cp-ops:latest .
+```
+
 ### Run container
 
 ```bash
@@ -171,6 +181,8 @@ docker compose -f deploy/docker/docker-compose.yml up -d --build
 
 Files included:
 - `deploy/docker/Dockerfile`
+- `deploy/docker/Dockerfile.standard`
+- `deploy/docker/Dockerfile.raspberrypi`
 - `.dockerignore`
 - `deploy/docker/docker-compose.yml`
 - `deploy/docker/docker-compose.server.yml` (direct server use with `.env` and bind mounts)
