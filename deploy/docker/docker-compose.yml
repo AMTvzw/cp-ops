@@ -23,6 +23,14 @@ services:
       # DB_URL: mysql://user:password@host:3306/dbname
       # DB_SSL: "true"
       # DB_SSL_REJECT_UNAUTHORIZED: "true"
+      # DB_CONNECT_TIMEOUT_MS: "15000"
+      # DB_POOL_MIN: "0"
+      # DB_POOL_MAX: "10"
+      # DB_POOL_CREATE_TIMEOUT_MS: "10000"
+      # DB_POOL_ACQUIRE_TIMEOUT_MS: "15000"
+      # DB_POOL_IDLE_TIMEOUT_MS: "30000"
+      # DB_POOL_REAP_INTERVAL_MS: "1000"
+      # DB_ACQUIRE_CONNECTION_TIMEOUT_MS: "15000"
       # UPLOAD_STORAGE: "db"
       SESSION_SECRET: "replace-with-a-long-random-secret-min-32"
       DEFAULT_ROOT_USERNAME: root

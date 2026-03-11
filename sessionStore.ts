@@ -44,9 +44,14 @@ export class KnexSessionStore extends session.Store {
   }
 
   private async clearExpired() {
-    await this.knexDb(SESSION_TABLE)
-      .where("expires_at", "<=", Date.now())
-      .del();
+    try {
+      await this.knexDb(SESSION_TABLE)
+        .where("expires_at", "<=", Date.now())
+        .del();
+    } catch (error) {
+      // Cleanup should never crash the app; next interval will retry.
+      console.error('[session-store] cleanup failed:', error);
+    }
   }
 
   get = (sid: string, callback: (err?: any, session?: SessionLike | null) => void): void => {

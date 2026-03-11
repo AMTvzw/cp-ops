@@ -24,9 +24,15 @@ const asBool = (value: string | undefined, fallback = false) => {
   return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
 };
 
+const asPositiveInt = (value: string | undefined, fallback: number) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : fallback;
+};
+
 const buildMysqlConnection = () => {
   const useSsl = asBool(process.env.DB_SSL, false);
   const rejectUnauthorized = asBool(process.env.DB_SSL_REJECT_UNAUTHORIZED, true);
+  const connectTimeout = asPositiveInt(process.env.DB_CONNECT_TIMEOUT_MS, 15000);
 
   let baseConnection: {
     host?: string;
@@ -58,11 +64,19 @@ const buildMysqlConnection = () => {
   if (useSsl) {
     return {
       ...baseConnection,
+      connectTimeout,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 0,
       ssl: { rejectUnauthorized },
     };
   }
 
-  return baseConnection;
+  return {
+    ...baseConnection,
+    connectTimeout,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0,
+  };
 };
 
 const db = knex({
@@ -70,9 +84,27 @@ const db = knex({
   connection:
     isMysqlClient
       ? buildMysqlConnection()
-      : {
+        : {
           filename: sqliteFilePath,
         },
+  pool:
+    isMysqlClient
+      ? {
+          min: asPositiveInt(process.env.DB_POOL_MIN, 0),
+          max: asPositiveInt(process.env.DB_POOL_MAX, 10),
+          createTimeoutMillis: asPositiveInt(process.env.DB_POOL_CREATE_TIMEOUT_MS, 10000),
+          acquireTimeoutMillis: asPositiveInt(process.env.DB_POOL_ACQUIRE_TIMEOUT_MS, 15000),
+          idleTimeoutMillis: asPositiveInt(process.env.DB_POOL_IDLE_TIMEOUT_MS, 30000),
+          reapIntervalMillis: asPositiveInt(process.env.DB_POOL_REAP_INTERVAL_MS, 1000),
+          afterCreate: (conn: any, done: (err: Error | null, connection: any) => void) => {
+            conn.on('error', (error: any) => {
+              console.error('[db] mysql connection error:', error?.code || error?.message || error);
+            });
+            done(null, conn);
+          },
+        }
+      : undefined,
+  acquireConnectionTimeout: asPositiveInt(process.env.DB_ACQUIRE_CONNECTION_TIMEOUT_MS, 15000),
   useNullAsDefault: dbClient === 'sqlite3',
 });
 

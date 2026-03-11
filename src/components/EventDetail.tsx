@@ -1196,6 +1196,12 @@ export default function EventDetail() {
               </div>
 
               <div className="border-t border-slate-100 pt-4">
+                <div className="text-sm text-slate-600 mb-4">
+                  <span className="font-semibold text-slate-700">Omschrijving:</span>
+                  <p className="mt-1 whitespace-pre-wrap break-words text-slate-800">
+                    {(event.description || '').trim() || '-'}
+                  </p>
+                </div>
                 {hasRole(['ROOT', 'ADMIN']) ? (
                   <div className="space-y-4">
                     <h3 className="text-sm font-semibold text-slate-700">Gegevens Bewerken</h3>
@@ -1277,12 +1283,7 @@ export default function EventDetail() {
                       {savingEventInfo ? 'Opslaan...' : 'Evenement Opslaan'}
                     </button>
                   </div>
-                ) : (
-                  <div className="text-sm text-slate-600">
-                    <span className="font-semibold text-slate-700">Omschrijving:</span>{' '}
-                    {event.description || '-'}
-                  </div>
-                )}
+                ) : null}
               </div>
             </div>
           </div>

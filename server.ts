@@ -27,6 +27,49 @@ const toPositiveIntArray = (value: unknown): number[] => {
   return [...unique];
 };
 
+const dateKeyFromLocalDate = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const normalizeDateKey = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
+  return trimmed;
+};
+
+const addDaysToDateKey = (dateKey: string, days: number): string => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey);
+  if (!match) return dateKey;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const base = new Date(year, month - 1, day);
+  base.setDate(base.getDate() + days);
+  return dateKeyFromLocalDate(base);
+};
+
+const canRoleAccessEventOnDate = (
+  role: string | undefined,
+  eventDate: unknown,
+  eventEndDate: unknown,
+  todayKey = dateKeyFromLocalDate(new Date()),
+) => {
+  if (role !== "OPERATOR" && role !== "VIEWER") return true;
+
+  const startDate = normalizeDateKey(eventDate);
+  if (!startDate) return false;
+
+  const configuredEndDate = normalizeDateKey(eventEndDate);
+  const endDate = configuredEndDate || startDate;
+  const effectiveEndDate = role === "OPERATOR" ? addDaysToDateKey(endDate, 1) : endDate;
+
+  return todayKey >= startDate && todayKey <= effectiveEndDate;
+};
+
 // Extend express-session to include custom properties
 declare module 'express-session' {
   interface SessionData {
@@ -284,7 +327,15 @@ export async function createApp() {
     const row = await db("event_user_access")
       .where({ event_id: eventId, user_id: req.session.userId })
       .first();
-    return Boolean(row);
+    if (!row) return false;
+
+    const event = await db("events")
+      .where({ id: eventId })
+      .select("date", "end_date")
+      .first();
+    if (!event) return false;
+
+    return canRoleAccessEventOnDate(req.session?.role, event.date, event.end_date);
   };
 
   const ensureEventAccess = async (req: any, res: any, eventId: number | string) => {
@@ -728,7 +779,16 @@ export async function createApp() {
           .where("eua.user_id", req.session.userId)
           .select("e.*")
           .orderBy("e.date", "desc");
-    res.json(events);
+
+    if (isAdminOrRoot) {
+      res.json(events);
+      return;
+    }
+
+    const filteredEvents = events.filter((event: any) =>
+      canRoleAccessEventOnDate(req.session?.role, event.date, event.end_date)
+    );
+    res.json(filteredEvents);
   });
 
   app.post("/api/events", requireRole(["ROOT", "ADMIN"]), async (req, res) => {
