@@ -8,6 +8,8 @@ COMPOSE_PI_OVERRIDE_FILE="deploy/docker/docker-compose.pi.override.yml"
 PI_HOST_PORT_DEFAULT="80"
 APP_DIR="$APP_DIR_DEFAULT"
 REPO_URL="${REPO_URL:-https://github.com/AMTvzw/cp-ops.git}"
+APT_RETRY_COUNT="${APT_RETRY_COUNT:-5}"
+APT_TIMEOUT_SECONDS="${APT_TIMEOUT_SECONDS:-30}"
 
 usage() {
   cat <<'EOF'
@@ -49,14 +51,20 @@ disable_ntop_repo_if_present() {
 }
 
 safe_apt_update() {
-  if apt-get update; then
+  local apt_opts=(
+    -o "Acquire::Retries=${APT_RETRY_COUNT}"
+    -o "Acquire::http::Timeout=${APT_TIMEOUT_SECONDS}"
+    -o "Acquire::https::Timeout=${APT_TIMEOUT_SECONDS}"
+  )
+
+  if apt-get "${apt_opts[@]}" update; then
     return
   fi
 
   echo "apt-get update failed. Checking for broken ntop repository entries..."
   if disable_ntop_repo_if_present; then
     echo "Retrying apt-get update after disabling ntop source..."
-    apt-get update
+    apt-get "${apt_opts[@]}" update
     return
   fi
 
