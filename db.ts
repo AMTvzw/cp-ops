@@ -109,6 +109,29 @@ const db = knex({
 });
 
 export async function initDb() {
+  // App Languages Table
+  if (!await db.schema.hasTable('app_languages')) {
+    await db.schema.createTable('app_languages', (table) => {
+      table.string('code', 16).primary();
+      table.string('name', 64).notNullable();
+      table.integer('is_active').notNullable().defaultTo(1);
+      table.timestamp('created_at').defaultTo(db.fn.now());
+    });
+  }
+
+  // App Translations Table
+  if (!await db.schema.hasTable('app_translations')) {
+    await db.schema.createTable('app_translations', (table) => {
+      table.increments('id').primary();
+      table.string('language_code', 16).notNullable();
+      table.string('translation_key', 191).notNullable();
+      table.text('translation_value').notNullable().defaultTo('');
+      table.timestamp('updated_at').defaultTo(db.fn.now());
+      table.unique(['language_code', 'translation_key']);
+      table.index(['language_code']);
+    });
+  }
+
   // Users Table
   if (!await db.schema.hasTable('users')) {
     await db.schema.createTable('users', (table) => {
@@ -116,7 +139,13 @@ export async function initDb() {
       table.string('username').unique().notNullable();
       table.string('password').notNullable();
       table.string('role').notNullable().defaultTo('VIEWER');
+      table.string('language_code', 16).notNullable().defaultTo('en');
     });
+  } else if (!await db.schema.hasColumn('users', 'language_code')) {
+    await db.schema.table('users', (table) => {
+      table.string('language_code', 16).notNullable().defaultTo('en');
+    });
+    await db('users').whereNull('language_code').update({ language_code: 'en' });
   }
 
   // Events Table
@@ -413,6 +442,23 @@ export async function initDb() {
       await db('settings').insert({ key, value });
     }
   }
+
+  const baseLanguages = [
+    { code: 'en', name: 'English' },
+    { code: 'nl', name: 'Nederlands' },
+  ];
+  for (const language of baseLanguages) {
+    const existing = await db('app_languages').where({ code: language.code }).first();
+    if (!existing) {
+      await db('app_languages').insert({
+        code: language.code,
+        name: language.name,
+        is_active: 1,
+      });
+    }
+  }
+
+  await db('users').whereNull('language_code').update({ language_code: 'en' });
 
   // Ensure each event has default team types
   const events = await db('events').select('id');

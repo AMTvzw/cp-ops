@@ -9,9 +9,10 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
-import { nl } from 'date-fns/locale';
+import { enUS, nl } from 'date-fns/locale';
 import { useUser, Role } from '../contexts/UserContext';
 import { fetchJsonSafe } from '../utils/http';
+import LanguageSelector from './LanguageSelector';
 
 interface Event {
   id: number;
@@ -136,12 +137,12 @@ type EventTabConfig = {
 };
 
 const EVENT_TABS: EventTabConfig[] = [
-  { id: 'info', label: 'Evenement Info', icon: FileText },
-  { id: 'interventions', label: 'Interventies', icon: Activity },
-  { id: 'team_status', label: 'Ploegstatus', icon: Users },
-  { id: 'teams', label: 'Ploegen', icon: Users },
-  { id: 'logs', label: 'Logboek', icon: FileText },
-  { id: 'settings', label: 'Instellingen', icon: Settings, roles: ['ROOT', 'ADMIN'] },
+  { id: 'info', label: 'Event info', icon: FileText },
+  { id: 'interventions', label: 'Interventions', icon: Activity },
+  { id: 'team_status', label: 'Team status', icon: Users },
+  { id: 'teams', label: 'Teams', icon: Users },
+  { id: 'logs', label: 'Logs', icon: FileText },
+  { id: 'settings', label: 'Settings', icon: Settings, roles: ['ROOT', 'ADMIN'] },
 ];
 
 const isEventAssignee = (value: unknown): value is EventAssignee => {
@@ -157,7 +158,7 @@ const isEventAssignee = (value: unknown): value is EventAssignee => {
 export default function EventDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { user, logout, hasRole, settings } = useUser();
+  const { user, logout, hasRole, settings, languageCode, t } = useUser();
   const isViewer = user?.role === 'VIEWER';
   const [event, setEvent] = useState<Event | null>(null);
   const [activeTab, setActiveTab] = useState<EventTab>('interventions');
@@ -287,7 +288,7 @@ export default function EventDetail() {
         logUsersResult,
       ].some(({ response }) => response.status === 401);
       if (hasUnauthorized) {
-        navigate('/');
+        navigate(`/${languageCode}`);
         return;
       }
 
@@ -997,7 +998,7 @@ export default function EventDetail() {
       return;
     }
 
-    navigate('/');
+    navigate(`/${languageCode}`);
   };
 
   const handleExport = async (format: 'csv' | 'excel') => {
@@ -1061,23 +1062,25 @@ export default function EventDetail() {
     void fetchData({ background: true });
   };
 
-  if (loading) return <div className="p-8 text-center">Laden...</div>;
-  if (!event) return <div className="p-8 text-center">Evenement niet gevonden.</div>;
+  const dateLocale = languageCode === 'nl' ? nl : enUS;
+
+  if (loading) return <div className="p-8 text-center">{t('common.loading')}</div>;
+  if (!event) return <div className="p-8 text-center">{t('event.notFound')}</div>;
 
   return (
     <div className="max-w-6xl mx-auto p-4 md:p-8 overflow-x-hidden">
       <header className="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div className="flex-1">
-          <Link to="/" className="text-sm text-slate-500 hover:text-slate-800 flex items-center gap-1 mb-2">
-            <ChevronRight className="rotate-180 w-4 h-4" /> Terug naar overzicht
+          <Link to={`/${languageCode}`} className="text-sm text-slate-500 hover:text-slate-800 flex items-center gap-1 mb-2">
+            <ChevronRight className="rotate-180 w-4 h-4" /> {t('common.backToOverview')}
           </Link>
           <h1 className="text-4xl font-bold tracking-tight text-slate-900">{event.name}</h1>
           <div className="flex flex-wrap gap-x-6 gap-y-1 mt-2 text-slate-500 text-sm">
             <p className="flex items-center gap-2">
               <Clock className="w-4 h-4" /> 
-              {format(new Date(event.date), 'PPP', { locale: nl })}
+              {format(new Date(event.date), 'PPP', { locale: dateLocale })}
               {event.end_date && event.end_date !== event.date && (
-                <> - {format(new Date(event.end_date), 'PPP', { locale: nl })}</>
+                <> - {format(new Date(event.end_date), 'PPP', { locale: dateLocale })}</>
               )}
             </p>
             {event.location && (
@@ -1098,12 +1101,13 @@ export default function EventDetail() {
           </div>
         </div>
         <div className="flex flex-wrap gap-2 w-full md:w-auto">
+          <LanguageSelector />
           {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && (
             <button
               onClick={() => setShowEventAnnouncement(true)}
               className="flex items-center justify-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm font-medium w-full sm:w-auto"
             >
-              <Megaphone className="w-4 h-4" /> Event Melding
+              <Megaphone className="w-4 h-4" /> {t('event.announcement')}
             </button>
           )}
           {hasRole(['ROOT', 'ADMIN']) && (
@@ -1111,7 +1115,7 @@ export default function EventDetail() {
               onClick={() => handleExport('csv')}
               className="flex items-center justify-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors text-sm font-medium w-full sm:w-auto"
             >
-              <Download className="w-4 h-4" /> Export CSV
+              <Download className="w-4 h-4" /> {t('event.exportCsv')}
             </button>
           )}
           {hasRole(['ROOT', 'ADMIN']) && (
@@ -1119,7 +1123,7 @@ export default function EventDetail() {
               onClick={() => handleExport('excel')}
               className="flex items-center justify-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors text-sm font-medium w-full sm:w-auto"
             >
-              <Download className="w-4 h-4" /> Export Excel
+              <Download className="w-4 h-4" /> {t('event.exportExcel')}
             </button>
           )}
           {hasRole(['ROOT', 'ADMIN']) && (
@@ -1127,14 +1131,14 @@ export default function EventDetail() {
               onClick={handleDeleteEvent}
               className="flex items-center justify-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm font-medium w-full sm:w-auto"
             >
-              <Trash2 className="w-4 h-4" /> Verwijder Event
+              <Trash2 className="w-4 h-4" /> {t('event.deleteEvent')}
             </button>
           )}
           <button 
             onClick={logout}
             className="flex items-center justify-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors text-sm font-medium text-slate-600 w-full sm:w-auto"
           >
-            <LogOut className="w-4 h-4" /> Uitloggen
+            <LogOut className="w-4 h-4" /> {t('common.logout')}
           </button>
         </div>
       </header>
@@ -1175,9 +1179,9 @@ export default function EventDetail() {
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-1">Periode</p>
                   <p className="text-slate-800">
-                    {format(new Date(event.date), 'PPP', { locale: nl })}
+                    {format(new Date(event.date), 'PPP', { locale: dateLocale })}
                     {event.end_date && event.end_date !== event.date && (
-                      <> - {format(new Date(event.end_date), 'PPP', { locale: nl })}</>
+                      <> - {format(new Date(event.end_date), 'PPP', { locale: dateLocale })}</>
                     )}
                   </p>
                 </div>

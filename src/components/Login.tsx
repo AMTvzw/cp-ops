@@ -8,7 +8,7 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const { login, settings } = useUser();
+  const { login, settings, t } = useUser();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -24,10 +24,10 @@ export default function Login() {
         const data = await res.json();
         login(data);
       } else {
-        setError('Ongeldige gebruikersnaam of wachtwoord');
+        setError(t('login.error.invalid'));
       }
     } catch (err) {
-      setError('Er is een fout opgetreden bij het inloggen');
+      setError(t('login.error.generic'));
     } finally {
       setLoading(false);
     }
@@ -51,8 +51,10 @@ export default function Login() {
               <Shield className="w-8 h-8" />
             </div>
           )}
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 text-center">{settings.app_name} Login</h1>
-          <p className="text-slate-500 mt-2">Voer uw gegevens in om door te gaan</p>
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 text-center">
+            {t('login.title', { appName: settings.app_name })}
+          </h1>
+          <p className="text-slate-500 mt-2">{t('login.subtitle')}</p>
         </div>
 
         {error && (
@@ -64,7 +66,7 @@ export default function Login() {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Gebruikersnaam</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1">{t('login.username')}</label>
             <div className="relative">
               <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
               <input
@@ -74,12 +76,12 @@ export default function Login() {
                 onChange={e => setUsername(e.target.value)}
                 className="w-full pl-12 pr-4 py-3 rounded-xl border border-slate-200 focus:ring-2 outline-none transition-all"
                 style={{ '--tw-ring-color': settings.primary_color } as any}
-                placeholder="Gebruikersnaam"
+                placeholder={t('login.username')}
               />
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Wachtwoord</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1">{t('login.password')}</label>
             <div className="relative">
               <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
               <input
@@ -99,12 +101,12 @@ export default function Login() {
             className="w-full text-white py-4 rounded-xl font-bold transition-all shadow-lg disabled:opacity-50 disabled:cursor-not-allowed mt-4"
             style={{ backgroundColor: settings.primary_color }}
           >
-            {loading ? 'Laden...' : 'Inloggen'}
+            {loading ? t('login.signingIn') : t('login.submit')}
           </button>
         </form>
 
         <div className="mt-8 pt-8 border-t border-slate-100 text-center text-xs text-slate-400">
-          &copy; {new Date().getFullYear()} {settings.app_name} Operationeel Systeem
+          &copy; {t('login.footer', { year: new Date().getFullYear(), appName: settings.app_name })}
         </div>
       </motion.div>
     </div>

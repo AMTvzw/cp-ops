@@ -3,10 +3,11 @@ import { Link } from 'react-router-dom';
 import { Plus, Calendar, ChevronRight, Activity, Users, LogOut, Settings, Megaphone, MapPin, Building2 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { format } from 'date-fns';
-import { nl } from 'date-fns/locale';
+import { enUS, nl } from 'date-fns/locale';
 import { useUser } from '../contexts/UserContext';
 import PasswordChangeButton from './PasswordChangeButton';
 import { fetchJsonSafe } from '../utils/http';
+import LanguageSelector from './LanguageSelector';
 
 interface Event {
   id: number;
@@ -19,7 +20,7 @@ interface Event {
 }
 
 export default function Dashboard() {
-  const { user, logout, hasRole, settings } = useUser();
+  const { user, logout, hasRole, settings, t, languageCode } = useUser();
   const [events, setEvents] = useState<Event[]>([]);
   const [showNewEvent, setShowNewEvent] = useState(false);
   const [newEvent, setNewEvent] = useState({ 
@@ -92,9 +93,11 @@ export default function Dashboard() {
       });
       fetchEvents();
     } else {
-      alert('Fout bij het opslaan van het evenement. Controleer de velden.');
+      alert(t('dashboard.eventCreateError'));
     }
   };
+
+  const dateLocale = languageCode === 'nl' ? nl : enUS;
 
   const handleUpdateGlobalAnnouncement = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -115,24 +118,27 @@ export default function Dashboard() {
           )}
           <div>
             <h1 className="text-4xl font-extrabold tracking-tight text-slate-900">{settings.app_name}</h1>
-            <p className="text-slate-500 mt-1">Welkom, <span className="font-bold text-slate-700">{user?.username}</span> ({user?.role})</p>
+            <p className="text-slate-500 mt-1">
+              {t('dashboard.welcome', { name: user?.username || '', role: user?.role || '' })}
+            </p>
           </div>
         </div>
         <div className="flex flex-wrap gap-2 w-full md:w-auto">
+          <LanguageSelector />
           {hasRole(['ROOT', 'ADMIN']) && (
             <button
               onClick={() => setShowGlobalAnnouncement(true)}
               className="bg-red-700 text-white px-4 py-2 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-red-800 transition-all shadow-lg shadow-red-100 w-full sm:w-auto"
             >
-              <Megaphone className="w-4 h-4" /> Globale Melding
+              <Megaphone className="w-4 h-4" /> {t('dashboard.globalAnnouncement')}
             </button>
           )}
           {hasRole(['ROOT', 'ADMIN']) && (
             <Link 
-              to="/users"
+              to={`/${languageCode}/users`}
               className="bg-slate-800 text-white px-4 py-2 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-slate-900 transition-all shadow-lg shadow-slate-200 w-full sm:w-auto"
             >
-              <Settings className="w-4 h-4" /> Beheer
+              <Settings className="w-4 h-4" /> {t('common.manage')}
             </Link>
           )}
           {hasRole(['ROOT', 'ADMIN']) && (
@@ -141,7 +147,7 @@ export default function Dashboard() {
               className="text-white px-4 py-2 rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg w-full sm:w-auto"
               style={{ backgroundColor: settings.primary_color }}
             >
-              <Plus className="w-4 h-4" /> Nieuw Event
+              <Plus className="w-4 h-4" /> {t('dashboard.newEvent')}
             </button>
           )}
           <PasswordChangeButton className="bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-slate-50 transition-all w-full sm:w-auto" />
@@ -149,14 +155,14 @@ export default function Dashboard() {
             onClick={logout}
             className="bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-slate-50 transition-all w-full sm:w-auto"
           >
-            <LogOut className="w-4 h-4" /> Uitloggen
+            <LogOut className="w-4 h-4" /> {t('common.logout')}
           </button>
         </div>
       </header>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {events.map((event) => (
-          <Link key={event.id} to={`/event/${event.id}`}>
+          <Link key={event.id} to={`/${languageCode}/event/${event.id}`}>
             <motion.div 
               whileHover={{ y: -4 }}
               className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-all group"
@@ -172,9 +178,9 @@ export default function Dashboard() {
               </div>
               <h2 className="text-xl font-bold text-slate-900 mb-1">{event.name}</h2>
               <p className="text-sm text-slate-500 mb-2">
-                {format(new Date(event.date), 'PPP', { locale: nl })}
+                {format(new Date(event.date), 'PPP', { locale: dateLocale })}
                 {event.end_date && event.end_date !== event.date && (
-                  <> - {format(new Date(event.end_date), 'PPP', { locale: nl })}</>
+                  <> - {format(new Date(event.end_date), 'PPP', { locale: dateLocale })}</>
                 )}
               </p>
               
@@ -193,10 +199,10 @@ export default function Dashboard() {
               
               <div className="flex gap-4 mt-6 pt-6 border-t border-slate-50">
                 <div className="flex items-center gap-1 text-xs font-bold text-slate-400 uppercase tracking-wider">
-                  <Activity className="w-3 h-3" /> Interventies
+                  <Activity className="w-3 h-3" /> {t('dashboard.interventions')}
                 </div>
                 <div className="flex items-center gap-1 text-xs font-bold text-slate-400 uppercase tracking-wider">
-                  <Users className="w-3 h-3" /> Ploegen
+                  <Users className="w-3 h-3" /> {t('dashboard.teams')}
                 </div>
               </div>
             </motion.div>
@@ -206,14 +212,14 @@ export default function Dashboard() {
         {events.length === 0 && (
           <div className="col-span-full py-20 text-center border-2 border-dashed border-slate-200 rounded-3xl">
             <Calendar className="w-12 h-12 text-slate-300 mx-auto mb-4" />
-            <p className="text-slate-400 font-medium">Nog geen evenementen aangemaakt.</p>
+            <p className="text-slate-400 font-medium">{t('dashboard.noEvents')}</p>
             {hasRole(['ROOT', 'ADMIN']) && (
               <button 
                 onClick={() => setShowNewEvent(true)}
                 className="mt-4 font-bold hover:underline"
                 style={{ color: settings.primary_color }}
               >
-                Maak je eerste event aan
+                {t('dashboard.createFirstEvent')}
               </button>
             )}
           </div>
@@ -228,7 +234,7 @@ export default function Dashboard() {
             animate={{ scale: 1, opacity: 1 }}
             className="bg-white rounded-3xl p-8 w-full max-w-2xl shadow-2xl overflow-y-auto max-h-[90vh]"
           >
-            <h2 className="text-2xl font-bold mb-6">Nieuw Evenement</h2>
+            <h2 className="text-2xl font-bold mb-6">{t('dashboard.newEventModal')}</h2>
             <form onSubmit={handleCreateEvent} className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="md:col-span-2">

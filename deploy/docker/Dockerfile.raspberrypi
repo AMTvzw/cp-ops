@@ -1,5 +1,11 @@
 FROM node:22-bookworm-slim
 
+ARG APP_VERSION=dev
+LABEL org.opencontainers.image.title="CP-OPS" \
+      org.opencontainers.image.description="Operational coordination platform for events and interventions" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.source="https://github.com/AMTvzw/cp-ops"
+
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -17,6 +23,7 @@ RUN npm run build
 RUN mkdir -p /app/data /app/uploads
 
 ENV NODE_ENV=production \
+    APP_VERSION=${APP_VERSION} \
     PORT=31987 \
     DB_CLIENT=sqlite3 \
     DB_FILENAME=/app/data/cp_ops.sqlite \
@@ -32,5 +39,8 @@ ENV NODE_ENV=production \
     UPLOAD_STORAGE=fs
 
 EXPOSE 31987
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:31987/api/settings').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["npx", "tsx", "server.ts"]

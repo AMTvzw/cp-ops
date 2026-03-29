@@ -70,12 +70,90 @@ const canRoleAccessEventOnDate = (
   return todayKey >= startDate && todayKey <= effectiveEndDate;
 };
 
+const UI_LITERAL_MIN_LENGTH = 2;
+const UI_LITERAL_MAX_LENGTH = 300;
+
+const shouldKeepUiLiteral = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (trimmed.length < UI_LITERAL_MIN_LENGTH || trimmed.length > UI_LITERAL_MAX_LENGTH) return false;
+  if (/^[0-9\s.,:/_-]+$/.test(trimmed)) return false;
+  if (/^[{}[\]()<>]+$/.test(trimmed)) return false;
+  if (/^[.#][a-z0-9_-]+$/i.test(trimmed)) return false;
+  return true;
+};
+
+const normalizeUiLiteral = (value: string) => value.replace(/\s+/g, " ").trim();
+
+const extractUiLiteralsFromSource = (source: string) => {
+  const found = new Set<string>();
+
+  const addCandidate = (raw: string) => {
+    const normalized = normalizeUiLiteral(raw);
+    if (!shouldKeepUiLiteral(normalized)) return;
+    found.add(normalized);
+  };
+
+  const textNodeRegex = />\s*([^<>{}\n][^<>{}]*)\s*</g;
+  let textMatch: RegExpExecArray | null = null;
+  while ((textMatch = textNodeRegex.exec(source)) !== null) {
+    addCandidate(textMatch[1]);
+  }
+
+  const attrRegex = /(placeholder|title|aria-label|alt|label)\s*=\s*["']([^"']+)["']/g;
+  let attrMatch: RegExpExecArray | null = null;
+  while ((attrMatch = attrRegex.exec(source)) !== null) {
+    addCandidate(attrMatch[2]);
+  }
+
+  const dialogRegex = /\b(?:alert|confirm|prompt)\s*\(\s*["'`]([^"'`]+)["'`]/g;
+  let dialogMatch: RegExpExecArray | null = null;
+  while ((dialogMatch = dialogRegex.exec(source)) !== null) {
+    addCandidate(dialogMatch[1]);
+  }
+
+  return [...found];
+};
+
+const collectUiLiteralCandidates = async () => {
+  const srcRoot = path.join(process.cwd(), "src");
+  const files: string[] = [];
+
+  const walk = async (dir: string) => {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "i18n" || entry.name === "assets") continue;
+        await walk(fullPath);
+        continue;
+      }
+      if (!/\.(tsx?|jsx?)$/i.test(entry.name)) continue;
+      files.push(fullPath);
+    }
+  };
+
+  await walk(srcRoot);
+
+  const literals = new Set<string>();
+  for (const filePath of files) {
+    const content = await fs.readFile(filePath, "utf-8");
+    const extracted = extractUiLiteralsFromSource(content);
+    for (const literal of extracted) {
+      literals.add(literal);
+    }
+  }
+
+  return [...literals].sort((a, b) => a.localeCompare(b));
+};
+
 // Extend express-session to include custom properties
 declare module 'express-session' {
   interface SessionData {
     userId: number;
     username: string;
     role: string;
+    language_code: string;
   }
 }
 
@@ -320,6 +398,12 @@ export async function createApp() {
   };
 
   const isPrivileged = (req: any) => req.session?.role === "ROOT" || req.session?.role === "ADMIN";
+  const normalizeLanguageCode = (value: unknown): string | null => {
+    if (typeof value !== "string") return null;
+    const normalized = value.trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9_-]{1,15}$/.test(normalized)) return null;
+    return normalized;
+  };
 
   const hasEventAccess = async (req: any, eventId: number | string) => {
     if (!req.session?.userId) return false;
@@ -577,7 +661,8 @@ export async function createApp() {
         req.session.userId = user.id;
         req.session.username = user.username;
         req.session.role = user.role;
-        res.json({ id: user.id, username: user.username, role: user.role });
+        req.session.language_code = user.language_code || "en";
+        res.json({ id: user.id, username: user.username, role: user.role, language_code: user.language_code || "en" });
       } else {
         res.status(401).json({ error: "Invalid credentials" });
       }
@@ -592,12 +677,60 @@ export async function createApp() {
     });
   });
 
-  app.get("/api/me", (req: any, res) => {
+  app.get("/api/me", async (req: any, res) => {
     if (req.session.userId) {
-      res.json({ id: req.session.userId, username: req.session.username, role: req.session.role });
+      if (!req.session.language_code) {
+        const currentUser = await db("users").where({ id: req.session.userId }).select("language_code").first();
+        req.session.language_code = currentUser?.language_code || "en";
+      }
+      res.json({
+        id: req.session.userId,
+        username: req.session.username,
+        role: req.session.role,
+        language_code: req.session.language_code || "en",
+      });
     } else {
       res.status(401).json({ error: "Not logged in" });
     }
+  });
+
+  app.get("/api/languages", requireAuth, async (req: any, res) => {
+    const languages = await db("app_languages")
+      .where({ is_active: 1 })
+      .select("code", "name", "is_active")
+      .orderBy("name", "asc");
+    res.json(languages);
+  });
+
+  app.get("/api/translations", requireAuth, async (req: any, res) => {
+    const requested = normalizeLanguageCode(req.query.lang);
+    const languageCode = requested || req.session.language_code || "en";
+    const rows = await db("app_translations")
+      .where({ language_code: languageCode })
+      .select("translation_key", "translation_value");
+
+    const translations = rows.reduce((acc: Record<string, string>, row: any) => {
+      acc[String(row.translation_key)] = String(row.translation_value ?? "");
+      return acc;
+    }, {});
+
+    res.json({ language_code: languageCode, translations });
+  });
+
+  app.post("/api/users/me/language", requireAuth, async (req: any, res) => {
+    const languageCode = normalizeLanguageCode(req.body?.language_code);
+    if (!languageCode) {
+      return res.status(400).json({ error: "Invalid language code" });
+    }
+
+    const language = await db("app_languages").where({ code: languageCode, is_active: 1 }).first();
+    if (!language) {
+      return res.status(400).json({ error: "Language is not available" });
+    }
+
+    await db("users").where({ id: req.session.userId }).update({ language_code: languageCode });
+    req.session.language_code = languageCode;
+    res.json({ success: true, language_code: languageCode });
   });
 
   app.post("/api/users/me/password", requireAuth, sensitiveRateLimit, async (req: any, res) => {
@@ -624,12 +757,13 @@ export async function createApp() {
 
   // User Management (ROOT/ADMIN only)
   app.get("/api/users", requireRole(["ROOT", "ADMIN"]), async (req, res) => {
-    const users = await db("users").select("id", "username", "role");
+    const users = await db("users").select("id", "username", "role", "language_code");
     res.json(users);
   });
 
   app.post("/api/users", requireRole(["ROOT", "ADMIN"]), sensitiveRateLimit, async (req, res) => {
     const { username, password, role } = req.body;
+    const languageCode = normalizeLanguageCode(req.body?.language_code) || "en";
     if (typeof username !== "string" || !username.trim() || username.trim().length > 64) {
       return res.status(400).json({ error: "Ongeldige gebruikersnaam" });
     }
@@ -643,9 +777,13 @@ export async function createApp() {
     if (req.session.role === "ADMIN" && role === "ROOT") {
       return res.status(403).json({ error: "Admin mag geen ROOT-gebruiker aanmaken" });
     }
+    const language = await db("app_languages").where({ code: languageCode, is_active: 1 }).first();
+    if (!language) {
+      return res.status(400).json({ error: "Ongeldige taal" });
+    }
     const hashedPassword = await bcrypt.hash(password, 10);
     try {
-      const [id] = await db("users").insert({ username: username.trim(), password: hashedPassword, role });
+      const [id] = await db("users").insert({ username: username.trim(), password: hashedPassword, role, language_code: languageCode });
       res.json({ id });
     } catch (e) {
       res.status(400).json({ error: "Username already exists" });
@@ -664,6 +802,9 @@ export async function createApp() {
     }
 
     const { username, role, password } = req.body || {};
+    const languageCode = typeof req.body?.language_code !== "undefined"
+      ? normalizeLanguageCode(req.body.language_code)
+      : null;
     const allowedRoles = ["ROOT", "ADMIN", "OPERATOR", "VIEWER"];
     const updatePayload: Record<string, any> = {};
 
@@ -711,17 +852,29 @@ export async function createApp() {
       updatePayload.password = await bcrypt.hash(password, 10);
     }
 
+    if (typeof req.body?.language_code !== "undefined") {
+      if (!languageCode) {
+        return res.status(400).json({ error: "Ongeldige taal" });
+      }
+      const language = await db("app_languages").where({ code: languageCode, is_active: 1 }).first();
+      if (!language) {
+        return res.status(400).json({ error: "Ongeldige taal" });
+      }
+      updatePayload.language_code = languageCode;
+    }
+
     if (Object.keys(updatePayload).length === 0) {
       return res.status(400).json({ error: "Geen geldige velden om te updaten" });
     }
 
     try {
       await db("users").where({ id: targetId }).update(updatePayload);
-      const updated = await db("users").where({ id: targetId }).select("id", "username", "role").first();
+      const updated = await db("users").where({ id: targetId }).select("id", "username", "role", "language_code").first();
 
       if (Number(req.session.userId) === targetId) {
         req.session.username = updated.username;
         req.session.role = updated.role;
+        req.session.language_code = updated.language_code || "en";
       }
 
       res.json(updated);
@@ -748,6 +901,126 @@ export async function createApp() {
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: "Delete failed" });
+    }
+  });
+
+  // Language Management (ROOT/ADMIN only)
+  app.get("/api/admin/languages", requireRole(["ROOT", "ADMIN"]), async (req, res) => {
+    const languages = await db("app_languages")
+      .select("code", "name", "is_active", "created_at")
+      .orderBy("name", "asc");
+    res.json(languages);
+  });
+
+  app.post("/api/admin/languages", requireRole(["ROOT", "ADMIN"]), sensitiveRateLimit, async (req, res) => {
+    const code = normalizeLanguageCode(req.body?.code);
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+    if (!code) return res.status(400).json({ error: "Invalid language code" });
+    if (!name) return res.status(400).json({ error: "Language name is required" });
+
+    const existing = await db("app_languages").where({ code }).first();
+    if (existing) return res.status(400).json({ error: "Language already exists" });
+
+    await db("app_languages").insert({ code, name, is_active: 1 });
+    res.json({ success: true, code, name });
+  });
+
+  app.patch("/api/admin/languages/:code", requireRole(["ROOT", "ADMIN"]), sensitiveRateLimit, async (req, res) => {
+    const code = normalizeLanguageCode(req.params.code);
+    if (!code) return res.status(400).json({ error: "Invalid language code" });
+
+    const language = await db("app_languages").where({ code }).first();
+    if (!language) return res.status(404).json({ error: "Language not found" });
+
+    const updatePayload: Record<string, any> = {};
+    if (typeof req.body?.name === "string" && req.body.name.trim()) {
+      updatePayload.name = req.body.name.trim();
+    }
+    if (typeof req.body?.is_active !== "undefined") {
+      updatePayload.is_active = req.body.is_active ? 1 : 0;
+    }
+    if (Object.keys(updatePayload).length === 0) {
+      return res.status(400).json({ error: "No valid changes" });
+    }
+
+    await db("app_languages").where({ code }).update(updatePayload);
+    const updated = await db("app_languages").where({ code }).first();
+    res.json(updated);
+  });
+
+  app.get("/api/admin/translations/:code", requireRole(["ROOT", "ADMIN"]), async (req, res) => {
+    const code = normalizeLanguageCode(req.params.code);
+    if (!code) return res.status(400).json({ error: "Invalid language code" });
+
+    const language = await db("app_languages").where({ code }).first();
+    if (!language) return res.status(404).json({ error: "Language not found" });
+
+    const rows = await db("app_translations")
+      .where({ language_code: code })
+      .select("translation_key", "translation_value")
+      .orderBy("translation_key", "asc");
+
+    const translations = rows.reduce((acc: Record<string, string>, row: any) => {
+      acc[String(row.translation_key)] = String(row.translation_value ?? "");
+      return acc;
+    }, {});
+
+    res.json({ code, translations });
+  });
+
+  app.put("/api/admin/translations/:code", requireRole(["ROOT", "ADMIN"]), sensitiveRateLimit, async (req, res) => {
+    const code = normalizeLanguageCode(req.params.code);
+    if (!code) return res.status(400).json({ error: "Invalid language code" });
+    if (code === "en") return res.status(400).json({ error: "English is the base language and cannot be overwritten" });
+
+    const language = await db("app_languages").where({ code }).first();
+    if (!language) return res.status(404).json({ error: "Language not found" });
+
+    const submitted = req.body?.translations;
+    if (!submitted || typeof submitted !== "object" || Array.isArray(submitted)) {
+      return res.status(400).json({ error: "Invalid translations payload" });
+    }
+
+    const entries = Object.entries(submitted)
+      .filter(([key]) => typeof key === "string" && key.trim().length > 0)
+      .map(([key, value]) => ({
+        language_code: code,
+        translation_key: key.trim(),
+        translation_value: typeof value === "string" ? value : "",
+      }));
+
+    await db.transaction(async (trx) => {
+      for (const entry of entries) {
+        if (entry.translation_value.trim() === "") {
+          await trx("app_translations")
+            .where({ language_code: code, translation_key: entry.translation_key })
+            .del();
+          continue;
+        }
+        await trx("app_translations")
+          .insert(entry)
+          .onConflict(["language_code", "translation_key"])
+          .merge({
+            translation_value: entry.translation_value,
+            updated_at: trx.fn.now(),
+          });
+      }
+    });
+
+    res.json({ success: true, updated: entries.length });
+  });
+
+  app.get("/api/admin/translations/extract-literals", requireRole(["ROOT", "ADMIN"]), async (_req, res) => {
+    try {
+      const literals = await collectUiLiteralCandidates();
+      const keys = literals.map((value) => ({
+        key: `literal:${value}`,
+        base: value,
+      }));
+      res.json({ count: keys.length, keys });
+    } catch (error) {
+      console.error("Failed to extract ui literals:", error);
+      res.status(500).json({ error: "Failed to extract UI literals" });
     }
   });
 

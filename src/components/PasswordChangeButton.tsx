@@ -10,9 +10,9 @@ interface PasswordChangeButtonProps {
 
 export default function PasswordChangeButton({
   className = 'bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-lg hover:bg-slate-50 transition-colors text-sm font-medium',
-  label = 'Wachtwoord',
+  label,
 }: PasswordChangeButtonProps) {
-  const { settings } = useUser();
+  const { settings, t } = useUser();
   const [open, setOpen] = useState(false);
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -44,11 +44,11 @@ export default function PasswordChangeButton({
     setError('');
 
     if (newPassword.length < 6) {
-      setError('Nieuw wachtwoord moet minstens 6 tekens bevatten.');
+      setError(t('password.error.short'));
       return;
     }
     if (newPassword !== confirmPassword) {
-      setError('Nieuwe wachtwoorden komen niet overeen.');
+      setError(t('password.error.match'));
       return;
     }
 
@@ -65,12 +65,12 @@ export default function PasswordChangeButton({
 
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        setError(data?.error || 'Wachtwoord wijzigen mislukt.');
+        setError(data?.error || t('password.error.failed'));
         return;
       }
 
       close();
-      alert('Wachtwoord succesvol gewijzigd.');
+      alert(t('password.success'));
     } finally {
       setSaving(false);
     }
@@ -81,7 +81,7 @@ export default function PasswordChangeButton({
       <button type="button" onClick={() => setOpen(true)} className={className}>
         <span className="inline-flex items-center gap-2">
           <KeyRound className="w-4 h-4" />
-          {label}
+          {label || t('password.button')}
         </span>
       </button>
 
@@ -92,7 +92,7 @@ export default function PasswordChangeButton({
             animate={{ scale: 1, opacity: 1 }}
             className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto"
           >
-            <h2 className="text-2xl font-bold mb-6">Wachtwoord Wijzigen</h2>
+            <h2 className="text-2xl font-bold mb-6">{t('password.changeTitle')}</h2>
             <form onSubmit={handleSubmit} className="space-y-4">
               {error && (
                 <div className="p-3 bg-red-50 border border-red-100 text-red-700 rounded-lg text-sm">
@@ -101,7 +101,7 @@ export default function PasswordChangeButton({
               )}
 
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Oud wachtwoord</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">{t('password.old')}</label>
                 <div className="relative">
                   <input
                     type={showOld ? 'text' : 'password'}
@@ -114,7 +114,7 @@ export default function PasswordChangeButton({
                     type="button"
                     onClick={() => setShowOld(v => !v)}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-700"
-                    aria-label={showOld ? 'Verberg wachtwoord' : 'Toon wachtwoord'}
+                    aria-label={showOld ? t('password.aria.hide') : t('password.aria.show')}
                   >
                     {showOld ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -122,7 +122,7 @@ export default function PasswordChangeButton({
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Nieuw wachtwoord</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">{t('password.new')}</label>
                 <div className="relative">
                   <input
                     type={showNew ? 'text' : 'password'}
@@ -135,7 +135,7 @@ export default function PasswordChangeButton({
                     type="button"
                     onClick={() => setShowNew(v => !v)}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-700"
-                    aria-label={showNew ? 'Verberg wachtwoord' : 'Toon wachtwoord'}
+                    aria-label={showNew ? t('password.aria.hide') : t('password.aria.show')}
                   >
                     {showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -143,7 +143,7 @@ export default function PasswordChangeButton({
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Nieuw wachtwoord (herhaal)</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">{t('password.confirm')}</label>
                 <div className="relative">
                   <input
                     type={showConfirm ? 'text' : 'password'}
@@ -156,7 +156,7 @@ export default function PasswordChangeButton({
                     type="button"
                     onClick={() => setShowConfirm(v => !v)}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-700"
-                    aria-label={showConfirm ? 'Verberg wachtwoord' : 'Toon wachtwoord'}
+                    aria-label={showConfirm ? t('password.aria.hide') : t('password.aria.show')}
                   >
                     {showConfirm ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -169,7 +169,7 @@ export default function PasswordChangeButton({
                   onClick={close}
                   className="flex-1 px-4 py-2 border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50"
                 >
-                  Annuleren
+                  {t('common.cancel')}
                 </button>
                 <button
                   type="submit"
@@ -177,7 +177,7 @@ export default function PasswordChangeButton({
                   className="flex-1 px-4 py-2 text-white rounded-lg disabled:opacity-60"
                   style={{ backgroundColor: settings.primary_color }}
                 >
-                  {saving ? 'Opslaan...' : 'Opslaan'}
+                  {saving ? t('password.saving') : t('password.save')}
                 </button>
               </div>
             </form>

@@ -1,5 +1,7 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
 import { fetchJsonSafe } from '../utils/http';
+import { builtInTranslations, interpolate } from '../i18n/translations';
+import { setRuntimeTextTranslator } from '../i18n/runtimeAutoTranslate';
 
 export type Role = 'ROOT' | 'ADMIN' | 'OPERATOR' | 'VIEWER';
 
@@ -7,6 +9,13 @@ interface User {
   id: number;
   username: string;
   role: Role;
+  language_code?: string;
+}
+
+export interface LanguageOption {
+  code: string;
+  name: string;
+  is_active?: number;
 }
 
 interface Settings {
@@ -28,16 +37,28 @@ interface UserContextType {
   user: User | null;
   settings: Settings;
   loading: boolean;
+  languageCode: string;
+  languages: LanguageOption[];
   login: (user: User) => void;
   logout: () => void;
   hasRole: (roles: Role[]) => boolean;
   updateSettings: (newSettings: Partial<Settings>) => Promise<void>;
+  setLanguage: (languageCode: string) => Promise<void>;
+  t: (key: string, vars?: Record<string, string | number>) => string;
 }
 
 const UserContext = createContext<UserContextType | undefined>(undefined);
 
+const defaultLanguages: LanguageOption[] = [
+  { code: 'en', name: 'English', is_active: 1 },
+  { code: 'nl', name: 'Nederlands', is_active: 1 },
+];
+
 export function UserProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [languageCode, setLanguageCode] = useState('en');
+  const [languages, setLanguages] = useState<LanguageOption[]>(defaultLanguages);
+  const [customTranslations, setCustomTranslations] = useState<Record<string, string>>({});
   const [settings, setSettings] = useState<Settings>({
     app_name: 'CP-OPS',
     primary_color: '#2563eb',
@@ -59,7 +80,14 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       fetchJsonSafe<User>('/api/me'),
       fetchJsonSafe<Partial<Settings>>('/api/settings')
     ]).then(([userData, settingsData]) => {
-      if (userData.response.ok && userData.data) setUser(userData.data);
+      if (userData.response.ok && userData.data) {
+        const normalizedUser = {
+          ...userData.data,
+          language_code: userData.data.language_code || 'en',
+        };
+        setUser(normalizedUser);
+        setLanguageCode(normalizedUser.language_code || 'en');
+      }
       if (settingsData.response.ok && settingsData.data) {
         setSettings(prev => ({ ...prev, ...settingsData.data }));
       }
@@ -68,9 +96,51 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     }).finally(() => setLoading(false));
   }, []);
 
-  const login = (userData: User) => setUser(userData);
+  useEffect(() => {
+    if (!user) {
+      setLanguages(defaultLanguages);
+      setCustomTranslations({});
+      setLanguageCode('en');
+      return;
+    }
+
+    const currentLanguage = user.language_code || 'en';
+    setLanguageCode(currentLanguage);
+
+    Promise.all([
+      fetchJsonSafe<LanguageOption[]>('/api/languages'),
+      fetchJsonSafe<{ language_code?: string; translations?: Record<string, string> }>(`/api/translations?lang=${encodeURIComponent(currentLanguage)}`),
+    ]).then(([languagesResult, translationsResult]) => {
+      if (languagesResult.response.ok && Array.isArray(languagesResult.data) && languagesResult.data.length > 0) {
+        setLanguages(languagesResult.data);
+      }
+      if (translationsResult.response.ok && translationsResult.data?.translations) {
+        setCustomTranslations(translationsResult.data.translations);
+      } else {
+        setCustomTranslations({});
+      }
+    }).catch((err) => {
+      console.error('Error loading languages/translations:', err);
+      setCustomTranslations({});
+    });
+  }, [user]);
+
+  const login = (userData: User) => {
+    const normalizedUser = {
+      ...userData,
+      language_code: userData.language_code || 'en',
+    };
+    setUser(normalizedUser);
+    setLanguageCode(normalizedUser.language_code || 'en');
+  };
+
   const logout = () => {
-    fetch('/api/logout', { method: 'POST' }).finally(() => setUser(null));
+    fetch('/api/logout', { method: 'POST' }).finally(() => {
+      setUser(null);
+      setLanguageCode('en');
+      setCustomTranslations({});
+      setLanguages(defaultLanguages);
+    });
   };
 
   const hasRole = (roles: Role[]) => {
@@ -88,6 +158,61 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       setSettings(prev => ({ ...prev, ...newSettings }));
     }
   };
+
+  const setLanguage = useCallback(async (nextLanguageCode: string) => {
+    if (!user) return;
+
+    const res = await fetch('/api/users/me/language', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ language_code: nextLanguageCode }),
+    });
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => null);
+      throw new Error(errorData?.error || 'Language update failed');
+    }
+
+    setUser(prev => (prev ? { ...prev, language_code: nextLanguageCode } : prev));
+    setLanguageCode(nextLanguageCode);
+
+    const translationsResult = await fetchJsonSafe<{ translations?: Record<string, string> }>(`/api/translations?lang=${encodeURIComponent(nextLanguageCode)}`);
+    if (translationsResult.response.ok && translationsResult.data?.translations) {
+      setCustomTranslations(translationsResult.data.translations);
+    } else {
+      setCustomTranslations({});
+    }
+  }, [user]);
+
+  const t = useCallback((key: string, vars?: Record<string, string | number>) => {
+    const normalizedCode = (languageCode || 'en').toLowerCase();
+    const builtInLanguage = builtInTranslations[normalizedCode as 'en' | 'nl'] || builtInTranslations.en;
+    const raw = customTranslations[key]
+      || customTranslations[`literal:${key}`]
+      || builtInLanguage[key]
+      || builtInLanguage[`literal:${key}`]
+      || builtInTranslations.en[key]
+      || builtInTranslations.en[`literal:${key}`]
+      || key;
+    return interpolate(raw, vars);
+  }, [languageCode, customTranslations]);
+
+  useEffect(() => {
+    setRuntimeTextTranslator((text: string) => {
+      const normalizedCode = (languageCode || 'en').toLowerCase();
+      const builtInLanguage = builtInTranslations[normalizedCode as 'en' | 'nl'] || builtInTranslations.en;
+      return customTranslations[text]
+        || customTranslations[`literal:${text}`]
+        || builtInLanguage[text]
+        || builtInLanguage[`literal:${text}`]
+        || builtInTranslations.en[text]
+        || builtInTranslations.en[`literal:${text}`]
+        || text;
+    });
+  }, [languageCode, customTranslations]);
+
+  useEffect(() => {
+    document.documentElement.lang = languageCode || 'en';
+  }, [languageCode]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -121,8 +246,22 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     applyFavicon('apple-touch-icon');
   }, [settings.logo_url]);
 
+  const contextValue = useMemo(() => ({
+    user,
+    settings,
+    loading,
+    languageCode,
+    languages,
+    login,
+    logout,
+    hasRole,
+    updateSettings,
+    setLanguage,
+    t,
+  }), [user, settings, loading, languageCode, languages, setLanguage, t]);
+
   return (
-    <UserContext.Provider value={{ user, settings, loading, login, logout, hasRole, updateSettings }}>
+    <UserContext.Provider value={contextValue}>
       {children}
     </UserContext.Provider>
   );

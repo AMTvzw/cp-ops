@@ -18,7 +18,7 @@ export default function AnnouncementBanner() {
   const canSeeGlobalAnnouncement = hasRole(['ROOT', 'ADMIN', 'OPERATOR']);
 
   useEffect(() => {
-    const match = location.pathname.match(/^\/event\/(\d+)/);
+    const match = location.pathname.match(/^\/(?:[a-z0-9][a-z0-9_-]{1,15}\/)?event\/(\d+)/i);
     const eventId = match ? match[1] : null;
 
     if (eventId) {
