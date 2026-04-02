@@ -4,6 +4,7 @@ import path from 'path';
 import 'dotenv/config';
 
 const defaultTeamTypes = ['Terrein', 'Interventie', 'DGH', 'NDPA', 'Dienstleiding'];
+const defaultAidPostName = 'Algemene hulppost';
 
 const dbClient = process.env.DB_CLIENT || 'sqlite3';
 const isMysqlClient = dbClient === 'mysql' || dbClient === 'mysql2';
@@ -163,13 +164,31 @@ export async function initDb() {
     });
   }
 
+  // Aid Posts Table
+  if (!await db.schema.hasTable('aid_posts')) {
+    await db.schema.createTable('aid_posts', (table) => {
+      table.increments('id').primary();
+      table.integer('event_id').unsigned().notNullable().references('id').inTable('events').onDelete('CASCADE');
+      table.string('name').notNullable();
+      table.string('location');
+      table.text('description');
+      table.timestamp('created_at').defaultTo(db.fn.now());
+      table.unique(['event_id', 'name']);
+    });
+  }
+
   // Event User Access Table
   if (!await db.schema.hasTable('event_user_access')) {
     await db.schema.createTable('event_user_access', (table) => {
       table.increments('id').primary();
       table.integer('event_id').unsigned().notNullable().references('id').inTable('events').onDelete('CASCADE');
       table.integer('user_id').unsigned().notNullable().references('id').inTable('users').onDelete('CASCADE');
+      table.integer('aid_post_id').unsigned().references('id').inTable('aid_posts').onDelete('SET NULL');
       table.unique(['event_id', 'user_id']);
+    });
+  } else if (!await db.schema.hasColumn('event_user_access', 'aid_post_id')) {
+    await db.schema.table('event_user_access', (table) => {
+      table.integer('aid_post_id').unsigned().references('id').inTable('aid_posts').onDelete('SET NULL');
     });
   }
 
@@ -235,11 +254,17 @@ export async function initDb() {
     await db.schema.createTable('teams', (table) => {
       table.increments('id').primary();
       table.integer('event_id').unsigned().references('id').inTable('events').onDelete('CASCADE');
+      table.integer('aid_post_id').unsigned().references('id').inTable('aid_posts').onDelete('SET NULL');
       table.string('name').notNullable();
       table.string('type').notNullable();
       table.integer('is_deployed').defaultTo(1);
     });
   } else {
+    if (!await db.schema.hasColumn('teams', 'aid_post_id')) {
+      await db.schema.table('teams', (table) => {
+        table.integer('aid_post_id').unsigned().references('id').inTable('aid_posts').onDelete('SET NULL');
+      });
+    }
     if (!await db.schema.hasColumn('teams', 'is_deployed')) {
       await db.schema.table('teams', (table) => {
         table.integer('is_deployed').defaultTo(1);
@@ -463,6 +488,40 @@ export async function initDb() {
   // Ensure each event has default team types
   const events = await db('events').select('id');
   for (const event of events) {
+    let defaultAidPost = await db('aid_posts')
+      .where({ event_id: event.id, name: defaultAidPostName })
+      .first();
+    if (!defaultAidPost) {
+      const [aidPostId] = await db('aid_posts').insert({
+        event_id: event.id,
+        name: defaultAidPostName,
+        location: '',
+        description: '',
+      });
+      defaultAidPost = await db('aid_posts').where({ id: aidPostId }).first();
+    }
+    const defaultAidPostId = Number(defaultAidPost?.id);
+
+    if (Number.isFinite(defaultAidPostId) && defaultAidPostId > 0) {
+      await db('teams')
+        .where({ event_id: event.id })
+        .whereNull('aid_post_id')
+        .update({ aid_post_id: defaultAidPostId });
+
+      const viewerRows = await db('event_user_access as eua')
+        .join('users as u', 'eua.user_id', 'u.id')
+        .where('eua.event_id', event.id)
+        .where('u.role', 'VIEWER')
+        .whereNull('eua.aid_post_id')
+        .select('eua.id');
+
+      if (viewerRows.length > 0) {
+        await db('event_user_access')
+          .whereIn('id', viewerRows.map((r: any) => Number(r.id)).filter((id: number) => Number.isFinite(id)))
+          .update({ aid_post_id: defaultAidPostId });
+      }
+    }
+
     const countResult = await db('team_types')
       .where({ event_id: event.id })
       .count<{ count: number }>('id as count')

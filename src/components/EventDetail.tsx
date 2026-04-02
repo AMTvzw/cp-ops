@@ -45,12 +45,21 @@ interface Team {
   name: string;
   type: string;
   is_deployed: number;
+  aid_post_id?: number | null;
+  aid_post_name?: string | null;
   members: TeamMember[];
 }
 
 interface TeamType {
   id: number;
   name: string;
+}
+
+interface AidPost {
+  id: number;
+  name: string;
+  location?: string;
+  description?: string;
 }
 
 interface TeamInIntervention extends Team {
@@ -115,6 +124,7 @@ interface EventAssignee {
   id: number;
   username: string;
   role: Role;
+  aid_post_id?: number | null;
 }
 
 interface EventFormState {
@@ -152,6 +162,11 @@ const isEventAssignee = (value: unknown): value is EventAssignee => {
     typeof candidate.id === 'number'
     && typeof candidate.username === 'string'
     && (candidate.role === 'ROOT' || candidate.role === 'ADMIN' || candidate.role === 'OPERATOR' || candidate.role === 'VIEWER')
+    && (
+      typeof candidate.aid_post_id === 'undefined'
+      || candidate.aid_post_id === null
+      || typeof candidate.aid_post_id === 'number'
+    )
   );
 };
 
@@ -169,6 +184,7 @@ export default function EventDetail() {
   const [interventions, setInterventions] = useState<Intervention[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [teamTypes, setTeamTypes] = useState<TeamType[]>([]);
+  const [aidPosts, setAidPosts] = useState<AidPost[]>([]);
   const [statuses, setStatuses] = useState<Status[]>([]);
   const [logs, setLogs] = useState<Log[]>([]);
   const [logUsers, setLogUsers] = useState<LogUser[]>([]);
@@ -200,7 +216,11 @@ export default function EventDetail() {
   const [eventAnnouncement, setEventAnnouncement] = useState({ message: '', bg_color: '#ef4444', is_active: false });
   
   const [showNewTeam, setShowNewTeam] = useState(false);
-  const [newTeam, setNewTeam] = useState({ name: '', type: '' });
+  const [newTeam, setNewTeam] = useState({ name: '', type: '', aid_post_id: '' });
+  const [showNewAidPost, setShowNewAidPost] = useState(false);
+  const [newAidPost, setNewAidPost] = useState({ name: '', location: '', description: '' });
+  const [editingAidPostId, setEditingAidPostId] = useState<number | null>(null);
+  const [editingAidPostForm, setEditingAidPostForm] = useState({ name: '', location: '', description: '' });
 
   const [newLog, setNewLog] = useState('');
   const [newLogContext, setNewLogContext] = useState({ team_id: '', intervention_id: '' });
@@ -217,9 +237,11 @@ export default function EventDetail() {
   const [editingTeamNameId, setEditingTeamNameId] = useState<number | null>(null);
   const [teamNameDrafts, setTeamNameDrafts] = useState<Record<number, string>>({});
   const [teamTypeDrafts, setTeamTypeDrafts] = useState<Record<number, string>>({});
+  const [teamAidPostDrafts, setTeamAidPostDrafts] = useState<Record<number, string>>({});
   const [teamDeployedDrafts, setTeamDeployedDrafts] = useState<Record<number, boolean>>({});
   const [eventAssignableUsers, setEventAssignableUsers] = useState<EventAssignee[]>([]);
   const [eventAssignedUserIds, setEventAssignedUserIds] = useState<number[]>([]);
+  const [eventAssignedAidPostIds, setEventAssignedAidPostIds] = useState<Record<number, string>>({});
   const [savingEventAssignments, setSavingEventAssignments] = useState(false);
 
   useEffect(() => {
@@ -249,14 +271,17 @@ export default function EventDetail() {
   useEffect(() => {
     const nameDrafts: Record<number, string> = {};
     const typeDrafts: Record<number, string> = {};
+    const aidPostDrafts: Record<number, string> = {};
     const deployDrafts: Record<number, boolean> = {};
     for (const team of teams) {
       nameDrafts[team.id] = team.name;
       typeDrafts[team.id] = team.type;
+      aidPostDrafts[team.id] = team.aid_post_id ? String(team.aid_post_id) : '';
       deployDrafts[team.id] = Number(team.is_deployed) === 1;
     }
     setTeamNameDrafts(nameDrafts);
     setTeamTypeDrafts(typeDrafts);
+    setTeamAidPostDrafts(aidPostDrafts);
     setTeamDeployedDrafts(deployDrafts);
   }, [teams]);
 
@@ -270,11 +295,12 @@ export default function EventDetail() {
   const fetchData = async ({ background = false }: { background?: boolean } = {}) => {
     if (!background) setLoading(true);
     try {
-      const [eventResult, interResult, teamResult, teamTypeResult, statusResult, logUsersResult] = await Promise.all([
+      const [eventResult, interResult, teamResult, teamTypeResult, aidPostResult, statusResult, logUsersResult] = await Promise.all([
         fetchJsonSafe<Event>(`/api/events/${id}`),
         fetchJsonSafe<Intervention[]>(`/api/events/${id}/interventions`),
         fetchJsonSafe<Team[]>(`/api/events/${id}/teams`),
         fetchJsonSafe<TeamType[]>(`/api/events/${id}/team-types`),
+        fetchJsonSafe<AidPost[]>(`/api/events/${id}/aid-posts`),
         fetchJsonSafe<Status[]>(`/api/events/${id}/statuses`),
         fetchJsonSafe<LogUser[]>(`/api/events/${id}/log-users`)
       ]);
@@ -284,6 +310,7 @@ export default function EventDetail() {
         interResult,
         teamResult,
         teamTypeResult,
+        aidPostResult,
         statusResult,
         logUsersResult,
       ].some(({ response }) => response.status === 401);
@@ -296,6 +323,7 @@ export default function EventDetail() {
       const interData = interResult.response.ok ? interResult.data : null;
       const teamData = teamResult.response.ok ? teamResult.data : null;
       const teamTypeData = teamTypeResult.response.ok ? teamTypeResult.data : null;
+      const aidPostData = aidPostResult.response.ok ? aidPostResult.data : null;
       const statusData = statusResult.response.ok ? statusResult.data : null;
       const logUsersData = logUsersResult.response.ok ? logUsersResult.data : null;
 
@@ -322,6 +350,16 @@ export default function EventDetail() {
       } else {
         setTeamTypes([]);
         setNewTeam(prev => ({ ...prev, type: '' }));
+      }
+      if (Array.isArray(aidPostData)) {
+        setAidPosts(aidPostData);
+        setNewTeam(prev => ({
+          ...prev,
+          aid_post_id: aidPostData.some(p => String(p.id) === prev.aid_post_id) ? prev.aid_post_id : '',
+        }));
+      } else {
+        setAidPosts([]);
+        setNewTeam(prev => ({ ...prev, aid_post_id: '' }));
       }
       if (Array.isArray(statusData)) {
         setStatuses(statusData);
@@ -364,10 +402,18 @@ export default function EventDetail() {
         }
         if (assignedRes.ok) {
           const assignedData = await assignedRes.json();
-          const ids = Array.isArray(assignedData)
-            ? assignedData.filter(isEventAssignee).map((u) => Number(u.id))
-            : [];
-          setEventAssignedUserIds(ids);
+          if (Array.isArray(assignedData)) {
+            const scoped = assignedData.filter(isEventAssignee);
+            setEventAssignedUserIds(scoped.map((u) => Number(u.id)));
+            const nextAidPostByUser: Record<number, string> = {};
+            for (const row of scoped) {
+              nextAidPostByUser[row.id] = row.aid_post_id ? String(row.aid_post_id) : '';
+            }
+            setEventAssignedAidPostIds(nextAidPostByUser);
+          } else {
+            setEventAssignedUserIds([]);
+            setEventAssignedAidPostIds({});
+          }
         }
       }
 
@@ -590,10 +636,78 @@ export default function EventDetail() {
     await fetch(`/api/events/${id}/teams`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newTeam)
+      body: JSON.stringify({
+        ...newTeam,
+        aid_post_id: newTeam.aid_post_id ? Number(newTeam.aid_post_id) : null,
+      })
     });
     setShowNewTeam(false);
-    setNewTeam({ name: '', type: teamTypes[0]?.name || '' });
+    setNewTeam({ name: '', type: teamTypes[0]?.name || '', aid_post_id: '' });
+    void fetchData({ background: true });
+  };
+
+  const handleAddAidPost = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const name = newAidPost.name.trim();
+    if (!name) {
+      alert('Naam hulppost is verplicht.');
+      return;
+    }
+
+    const res = await fetch(`/api/events/${id}/aid-posts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        location: newAidPost.location.trim(),
+        description: newAidPost.description.trim(),
+      }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      alert(data?.error || 'Hulppost aanmaken mislukt');
+      return;
+    }
+
+    setShowNewAidPost(false);
+    setNewAidPost({ name: '', location: '', description: '' });
+    void fetchData({ background: true });
+  };
+
+  const handleStartEditAidPost = (aidPost: AidPost) => {
+    setEditingAidPostId(aidPost.id);
+    setEditingAidPostForm({
+      name: aidPost.name || '',
+      location: aidPost.location || '',
+      description: aidPost.description || '',
+    });
+  };
+
+  const handleSaveAidPost = async () => {
+    if (!editingAidPostId) return;
+    const name = editingAidPostForm.name.trim();
+    if (!name) {
+      alert('Naam hulppost is verplicht.');
+      return;
+    }
+
+    const res = await fetch(`/api/aid-posts/${editingAidPostId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        location: editingAidPostForm.location.trim(),
+        description: editingAidPostForm.description.trim(),
+      }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      alert(data?.error || 'Hulppost opslaan mislukt');
+      return;
+    }
+
+    setEditingAidPostId(null);
+    setEditingAidPostForm({ name: '', location: '', description: '' });
     void fetchData({ background: true });
   };
 
@@ -706,6 +820,7 @@ export default function EventDetail() {
   const handleSaveTeamName = async (teamId: number) => {
     const name = (teamNameDrafts[teamId] || '').trim();
     const type = (teamTypeDrafts[teamId] || '').trim();
+    const aidPostId = teamAidPostDrafts[teamId] ? Number(teamAidPostDrafts[teamId]) : null;
     if (!name) {
       alert('Ploegnaam mag niet leeg zijn.');
       return;
@@ -718,7 +833,7 @@ export default function EventDetail() {
     const res = await fetch(`/api/teams/${teamId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, type }),
+      body: JSON.stringify({ name, type, aid_post_id: aidPostId }),
     });
 
     if (!res.ok) {
@@ -748,6 +863,19 @@ export default function EventDetail() {
 
   const handleRemoveMember = async (memberId: number) => {
     await fetch(`/api/members/${memberId}`, { method: 'DELETE' });
+    void fetchData({ background: true });
+  };
+
+  const handleDeleteTeam = async (teamId: number, teamName: string) => {
+    if (!hasRole(['ROOT', 'ADMIN'])) return;
+    if (!confirm(`Weet je zeker dat je ploeg "${teamName}" wilt verwijderen?`)) return;
+
+    const res = await fetch(`/api/teams/${teamId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      alert(data?.error || 'Ploeg verwijderen mislukt');
+      return;
+    }
     void fetchData({ background: true });
   };
 
@@ -802,12 +930,26 @@ export default function EventDetail() {
 
   const handleSaveEventAssignments = async () => {
     if (!hasRole(['ROOT', 'ADMIN'])) return;
+
+    for (const u of eventAssignableUsers) {
+      if (u.role !== 'VIEWER') continue;
+      if (!eventAssignedUserIds.includes(u.id)) continue;
+      if (!eventAssignedAidPostIds[u.id]) {
+        alert(`Viewer "${u.username}" moet aan een hulppost gekoppeld zijn.`);
+        return;
+      }
+    }
+
     setSavingEventAssignments(true);
     try {
+      const assignments = eventAssignedUserIds.map((userId) => ({
+        user_id: userId,
+        aid_post_id: eventAssignedAidPostIds[userId] ? Number(eventAssignedAidPostIds[userId]) : null,
+      }));
       const res = await fetch(`/api/events/${id}/assignments`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_ids: eventAssignedUserIds }),
+        body: JSON.stringify({ assignments }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
@@ -1654,15 +1796,100 @@ export default function EventDetail() {
           <div className="space-y-6">
             <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
               <h2 className="text-xl font-semibold">Ploegen</h2>
-              {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && (
-                <button 
-                  onClick={() => setShowNewTeam(true)}
-                  className="text-white px-4 py-2 rounded-lg flex items-center justify-center gap-2 transition-colors text-sm font-medium w-full sm:w-auto"
-                  style={{ backgroundColor: settings.primary_color }}
-                >
-                  <Plus className="w-4 h-4" /> Nieuwe Ploeg
-                </button>
+              <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+                {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && (
+                  <button
+                    onClick={() => setShowNewAidPost(true)}
+                    className="px-4 py-2 rounded-lg flex items-center justify-center gap-2 transition-colors text-sm font-medium w-full sm:w-auto border border-slate-300 text-slate-700 hover:bg-slate-50"
+                  >
+                    <Building2 className="w-4 h-4" /> Nieuwe Hulppost
+                  </button>
+                )}
+                {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && (
+                  <button
+                    onClick={() => setShowNewTeam(true)}
+                    className="text-white px-4 py-2 rounded-lg flex items-center justify-center gap-2 transition-colors text-sm font-medium w-full sm:w-auto"
+                    style={{ backgroundColor: settings.primary_color }}
+                  >
+                    <Plus className="w-4 h-4" /> Nieuwe Ploeg
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold text-slate-900">Hulpposten</h3>
+              </div>
+              {aidPosts.length === 0 && (
+                <p className="text-sm text-slate-500">Nog geen hulpposten voor dit evenement.</p>
               )}
+              {aidPosts.map((aidPost) => (
+                <div key={aidPost.id} className="rounded-lg border border-slate-200 p-3 bg-slate-50">
+                  {editingAidPostId === aidPost.id ? (
+                    <div className="space-y-2">
+                      <input
+                        type="text"
+                        value={editingAidPostForm.name}
+                        onChange={(e) => setEditingAidPostForm(prev => ({ ...prev, name: e.target.value }))}
+                        placeholder="Naam hulppost"
+                        className="w-full px-3 py-2 rounded border border-slate-200 text-sm"
+                      />
+                      <input
+                        type="text"
+                        value={editingAidPostForm.location}
+                        onChange={(e) => setEditingAidPostForm(prev => ({ ...prev, location: e.target.value }))}
+                        placeholder="Locatie"
+                        className="w-full px-3 py-2 rounded border border-slate-200 text-sm"
+                      />
+                      <textarea
+                        value={editingAidPostForm.description}
+                        onChange={(e) => setEditingAidPostForm(prev => ({ ...prev, description: e.target.value }))}
+                        placeholder="Omschrijving"
+                        className="w-full px-3 py-2 rounded border border-slate-200 text-sm h-20"
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={handleSaveAidPost}
+                          className="px-3 py-1.5 rounded text-white text-xs"
+                          style={{ backgroundColor: settings.primary_color }}
+                        >
+                          Opslaan
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingAidPostId(null);
+                            setEditingAidPostForm({ name: '', location: '', description: '' });
+                          }}
+                          className="px-3 py-1.5 rounded border border-slate-300 text-xs text-slate-600"
+                        >
+                          Annuleren
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-semibold text-slate-900">{aidPost.name}</p>
+                        <p className="text-xs text-slate-500">{aidPost.location || '-'}</p>
+                        <p className="text-xs text-slate-500">{aidPost.description || '-'}</p>
+                      </div>
+                      {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && (
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditAidPost(aidPost)}
+                          className="text-slate-400 hover:text-blue-600 transition-colors"
+                          title="Hulppost bewerken"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -1672,6 +1899,7 @@ export default function EventDetail() {
                     <div>
                       <h3 className="font-bold text-slate-900">{team.name}</h3>
                       <span className="text-[10px] uppercase font-bold text-slate-400 tracking-widest">{team.type}</span>
+                      <p className="text-xs text-slate-500 mt-1">Hulppost: {team.aid_post_name || 'Geen hulppost'}</p>
                       {Number(team.is_deployed) !== 1 && (
                         <span className="ml-2 text-[10px] uppercase font-bold text-red-600 tracking-widest">Niet ingezet</span>
                       )}
@@ -1685,6 +1913,16 @@ export default function EventDetail() {
                           title="Ploegnaam bewerken"
                         >
                           <Pencil className="w-4 h-4" />
+                        </button>
+                      )}
+                      {hasRole(['ROOT', 'ADMIN']) && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteTeam(team.id, team.name)}
+                          className="text-slate-300 hover:text-red-600 transition-colors"
+                          title="Ploeg verwijderen"
+                        >
+                          <Trash2 className="w-4 h-4" />
                         </button>
                       )}
                       <Users className="w-5 h-5 text-slate-400" />
@@ -1724,6 +1962,17 @@ export default function EventDetail() {
                                 <option key={type.id} value={type.name}>{type.name}</option>
                               ))}
                             </select>
+                            <label className="block text-xs font-semibold text-slate-600">Hulppost</label>
+                            <select
+                              value={teamAidPostDrafts[team.id] ?? (team.aid_post_id ? String(team.aid_post_id) : '')}
+                              onChange={(e) => setTeamAidPostDrafts(prev => ({ ...prev, [team.id]: e.target.value }))}
+                              className="w-full px-3 py-2 rounded border border-slate-200 text-sm"
+                            >
+                              <option value="">Geen hulppost</option>
+                              {aidPosts.map(post => (
+                                <option key={post.id} value={post.id}>{post.name}</option>
+                              ))}
+                            </select>
                             <div className="flex gap-2">
                               <button
                                 type="button"
@@ -1738,6 +1987,7 @@ export default function EventDetail() {
                                 onClick={() => {
                                   setTeamNameDrafts(prev => ({ ...prev, [team.id]: team.name }));
                                   setTeamTypeDrafts(prev => ({ ...prev, [team.id]: team.type }));
+                                  setTeamAidPostDrafts(prev => ({ ...prev, [team.id]: team.aid_post_id ? String(team.aid_post_id) : '' }));
                                   setEditingTeamNameId(null);
                                 }}
                                 className="px-3 py-2 rounded-lg border border-slate-200 text-xs text-slate-600 hover:bg-white"
@@ -2028,18 +2278,38 @@ export default function EventDetail() {
                     {eventAssignableUsers
                       .filter(u => eventAssignedUserIds.includes(u.id))
                       .map(u => (
-                        <div key={`assigned-${u.id}`} className="flex items-center justify-between p-3 bg-white rounded-lg border border-slate-200">
+                        <div key={`assigned-${u.id}`} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 bg-white rounded-lg border border-slate-200">
                           <div>
                             <span className="font-medium text-slate-800">{u.username}</span>
                             <span className="ml-2 text-xs uppercase text-slate-400 font-bold">{u.role}</span>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => setEventAssignedUserIds(prev => prev.filter(id => id !== u.id))}
-                            className="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50"
-                          >
-                            Verwijderen
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <select
+                              value={eventAssignedAidPostIds[u.id] || ''}
+                              onChange={(e) => setEventAssignedAidPostIds(prev => ({ ...prev, [u.id]: e.target.value }))}
+                              className="px-2 py-1.5 rounded border border-slate-200 text-xs"
+                            >
+                              <option value="">{u.role === 'VIEWER' ? 'Kies hulppost *' : 'Geen hulppost'}</option>
+                              {aidPosts.map(post => (
+                                <option key={post.id} value={post.id}>{post.name}</option>
+                              ))}
+                            </select>
+                            {u.role === 'VIEWER' && !eventAssignedAidPostIds[u.id] && (
+                              <span className="text-[10px] font-semibold text-red-600">Verplicht</span>
+                            )}
+                          </div>
+                          <div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEventAssignedUserIds(prev => prev.filter(id => id !== u.id));
+                                setEventAssignedAidPostIds(prev => ({ ...prev, [u.id]: '' }));
+                              }}
+                              className="text-xs px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50"
+                            >
+                              Verwijderen
+                            </button>
+                          </div>
                         </div>
                       ))}
                     {eventAssignableUsers.filter(u => eventAssignedUserIds.includes(u.id)).length === 0 && (
@@ -2063,11 +2333,20 @@ export default function EventDetail() {
                           type="checkbox"
                           checked={eventAssignedUserIds.includes(u.id)}
                           onChange={(e) => {
-                            setEventAssignedUserIds(prev =>
-                              e.target.checked
-                                ? (prev.includes(u.id) ? prev : [...prev, u.id])
-                                : prev.filter(id => id !== u.id)
-                            );
+                            setEventAssignedUserIds(prev => {
+                              if (e.target.checked) {
+                                if (prev.includes(u.id)) return prev;
+                                if (u.role === 'VIEWER') {
+                                  setEventAssignedAidPostIds(current => ({
+                                    ...current,
+                                    [u.id]: current[u.id] || (aidPosts[0] ? String(aidPosts[0].id) : ''),
+                                  }));
+                                }
+                                return [...prev, u.id];
+                              }
+                              setEventAssignedAidPostIds(current => ({ ...current, [u.id]: '' }));
+                              return prev.filter(id => id !== u.id);
+                            });
                           }}
                         />
                       </label>
@@ -2530,6 +2809,67 @@ export default function EventDetail() {
         </div>
       )}
 
+      {showNewAidPost && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto"
+          >
+            <h2 className="text-2xl font-bold mb-6">Nieuwe Hulppost</h2>
+            <form onSubmit={handleAddAidPost} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Naam</label>
+                <input
+                  autoFocus
+                  type="text"
+                  required
+                  value={newAidPost.name}
+                  onChange={e => setNewAidPost(prev => ({ ...prev, name: e.target.value }))}
+                  className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                  placeholder="Bijv. Hulppost Noord"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Locatie</label>
+                <input
+                  type="text"
+                  value={newAidPost.location}
+                  onChange={e => setNewAidPost(prev => ({ ...prev, location: e.target.value }))}
+                  className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                  placeholder="Bijv. Ingang A"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Omschrijving</label>
+                <textarea
+                  value={newAidPost.description}
+                  onChange={e => setNewAidPost(prev => ({ ...prev, description: e.target.value }))}
+                  className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none h-24"
+                  placeholder="Extra info over deze hulppost"
+                />
+              </div>
+              <div className="flex flex-col sm:flex-row gap-3 mt-8">
+                <button
+                  type="button"
+                  onClick={() => setShowNewAidPost(false)}
+                  className="flex-1 px-4 py-2 border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50"
+                >
+                  Annuleren
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 px-4 py-2 text-white rounded-lg transition-colors"
+                  style={{ backgroundColor: settings.primary_color }}
+                >
+                  Aanmaken
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
+
       {showNewTeam && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <motion.div 
@@ -2572,6 +2912,19 @@ export default function EventDetail() {
                     Voeg eerst een teamsoort toe in Instellingen.
                   </p>
                 )}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Hulppost</label>
+                <select
+                  value={newTeam.aid_post_id}
+                  onChange={e => setNewTeam(prev => ({ ...prev, aid_post_id: e.target.value }))}
+                  className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                >
+                  <option value="">Geen hulppost</option>
+                  {aidPosts.map(post => (
+                    <option key={post.id} value={post.id}>{post.name}</option>
+                  ))}
+                </select>
               </div>
               <div className="flex flex-col sm:flex-row gap-3 mt-8">
                 <button 

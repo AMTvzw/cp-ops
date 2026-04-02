@@ -431,6 +431,44 @@ export async function createApp() {
     return true;
   };
 
+  const getViewerAidPostIdForEvent = async (req: any, eventId: number | string): Promise<number | null> => {
+    if (req.session?.role !== "VIEWER") return null;
+    const row = await db("event_user_access")
+      .where({ event_id: eventId, user_id: req.session.userId })
+      .select("aid_post_id")
+      .first();
+    return toPositiveInt(row?.aid_post_id);
+  };
+
+  const validateAidPostForEvent = async (
+    eventId: number | string,
+    rawAidPostId: unknown,
+    {
+      allowNull = true,
+      requiredError = "Hulppost is verplicht",
+      invalidError = "Ongeldige hulppost voor dit evenement",
+    }: { allowNull?: boolean; requiredError?: string; invalidError?: string } = {},
+  ): Promise<{ ok: true; aidPostId: number | null } | { ok: false; error: string }> => {
+    if (rawAidPostId == null || rawAidPostId === "") {
+      if (allowNull) return { ok: true, aidPostId: null };
+      return { ok: false, error: requiredError };
+    }
+
+    const parsedAidPostId = toPositiveInt(rawAidPostId);
+    if (!parsedAidPostId) {
+      return { ok: false, error: invalidError };
+    }
+
+    const aidPost = await db("aid_posts")
+      .where({ id: parsedAidPostId, event_id: eventId })
+      .first();
+    if (!aidPost) {
+      return { ok: false, error: invalidError };
+    }
+
+    return { ok: true, aidPostId: parsedAidPostId };
+  };
+
   const recalculateInterventionClosedState = async (trx: any, interventionId: number | string) => {
     const intervention = await trx("interventions").where({ id: interventionId }).first();
     if (!intervention) return;
@@ -1083,6 +1121,12 @@ export async function createApp() {
       
       await db("statuses").insert(defaultStatuses.map(s => ({ ...s, event_id: eventId })));
       await db("team_types").insert(defaultTeamTypes.map(name => ({ event_id: eventId, name })));
+      await db("aid_posts").insert({
+        event_id: eventId,
+        name: "Algemene hulppost",
+        location: "",
+        description: "",
+      });
       await db("event_announcements").insert({
         event_id: eventId,
         message: "",
@@ -1250,7 +1294,7 @@ export async function createApp() {
       .join("users as u", "eua.user_id", "u.id")
       .where("eua.event_id", req.params.id)
       .whereIn("u.role", ["OPERATOR", "VIEWER"])
-      .select("u.id", "u.username", "u.role")
+      .select("u.id", "u.username", "u.role", "eua.aid_post_id")
       .orderBy("u.username", "asc");
 
     res.json(assigned);
@@ -1260,29 +1304,78 @@ export async function createApp() {
     const event = await db("events").where({ id: req.params.id }).first();
     if (!event) return res.status(404).json({ error: "Event not found" });
 
-    const userIds = Array.isArray(req.body?.user_ids)
-      ? toPositiveIntArray(req.body.user_ids)
-      : [];
+    const requestedAssignmentsRaw = Array.isArray(req.body?.assignments)
+      ? req.body.assignments
+      : null;
+
+    const requestedAssignments = requestedAssignmentsRaw
+      ? requestedAssignmentsRaw
+          .map((row: any) => ({
+            user_id: toPositiveInt(row?.user_id),
+            aid_post_id: row?.aid_post_id == null || row?.aid_post_id === "" ? null : toPositiveInt(row?.aid_post_id),
+          }))
+          .filter((row: any): row is { user_id: number; aid_post_id: number | null } => row.user_id != null)
+      : toPositiveIntArray(req.body?.user_ids).map((user_id) => ({ user_id, aid_post_id: null }));
+
+    const requestedUserIds = [...new Set(requestedAssignments.map((row) => row.user_id))];
 
     const allowedUsers = await db("users")
-      .whereIn("id", userIds.length ? userIds : [-1])
+      .whereIn("id", requestedUserIds.length ? requestedUserIds : [-1])
       .whereIn("role", ["OPERATOR", "VIEWER"])
-      .select("id");
+      .select("id", "role");
 
-    const allowedIds = allowedUsers.map(u => Number(u.id));
+    const allowedById = new Map<number, { id: number; role: string }>();
+    for (const user of allowedUsers) {
+      const parsedId = Number(user.id);
+      if (!Number.isFinite(parsedId)) continue;
+      allowedById.set(parsedId, { id: parsedId, role: String(user.role) });
+    }
+
+    const validAidPosts = await db("aid_posts")
+      .where({ event_id: req.params.id })
+      .select("id");
+    const validAidPostIds = new Set(
+      validAidPosts
+        .map((row: any) => toPositiveInt(row.id))
+        .filter((id): id is number => id != null),
+    );
+
+    const normalizedAssignmentsByUser = new Map<number, { user_id: number; aid_post_id: number | null }>();
+    for (const row of requestedAssignments) {
+      const allowedUser = allowedById.get(row.user_id);
+      if (!allowedUser) continue;
+
+      let aidPostId: number | null = row.aid_post_id;
+      if (aidPostId != null && !validAidPostIds.has(aidPostId)) {
+        return res.status(400).json({ error: "Ongeldige hulppost voor dit evenement" });
+      }
+
+      if (allowedUser.role === "VIEWER") {
+        if (aidPostId == null) {
+          return res.status(400).json({ error: "Viewer moet aan een hulppost gekoppeld zijn" });
+        }
+      } else {
+        aidPostId = aidPostId != null && validAidPostIds.has(aidPostId) ? aidPostId : null;
+      }
+
+      normalizedAssignmentsByUser.set(allowedUser.id, { user_id: allowedUser.id, aid_post_id: aidPostId });
+    }
+    const normalizedAssignments = [...normalizedAssignmentsByUser.values()];
 
     await db.transaction(async trx => {
       const existingAccessUsers = await trx("event_user_access as eua")
         .join("users as u", "eua.user_id", "u.id")
         .where("eua.event_id", req.params.id)
         .whereIn("u.role", ["OPERATOR", "VIEWER"])
-        .select("eua.user_id");
+        .select("eua.user_id", "eua.aid_post_id");
 
       const existingIds = existingAccessUsers
         .map((r: any) => toPositiveInt(r.user_id))
         .filter((id): id is number => id != null);
-      const toDelete = existingIds.filter(id => !allowedIds.includes(id));
-      const toInsert = allowedIds.filter(id => !existingIds.includes(id));
+      const nextIds = normalizedAssignments.map((row) => row.user_id);
+      const toDelete = existingIds.filter(id => !nextIds.includes(id));
+      const toInsert = normalizedAssignments.filter(row => !existingIds.includes(row.user_id));
+      const toUpdate = normalizedAssignments.filter(row => existingIds.includes(row.user_id));
 
       if (toDelete.length > 0) {
         await trx("event_user_access")
@@ -1293,8 +1386,18 @@ export async function createApp() {
 
       if (toInsert.length > 0) {
         await trx("event_user_access").insert(
-          toInsert.map(id => ({ event_id: req.params.id, user_id: id }))
+          toInsert.map(row => ({
+            event_id: req.params.id,
+            user_id: row.user_id,
+            aid_post_id: row.aid_post_id,
+          }))
         );
+      }
+
+      for (const row of toUpdate) {
+        await trx("event_user_access")
+          .where({ event_id: req.params.id, user_id: row.user_id })
+          .update({ aid_post_id: row.aid_post_id });
       }
     });
 
@@ -1485,6 +1588,82 @@ export async function createApp() {
     }
   });
 
+  // Aid Posts
+  app.get("/api/events/:id/aid-posts", requireAuth, async (req, res) => {
+    if (!await ensureEventAccess(req, res, req.params.id)) return;
+    const aidPosts = await db("aid_posts")
+      .where({ event_id: req.params.id })
+      .orderBy("name", "asc");
+    res.json(aidPosts);
+  });
+
+  app.post("/api/events/:id/aid-posts", requireRole(["ROOT", "ADMIN", "OPERATOR"]), async (req, res) => {
+    if (!await ensureEventAccess(req, res, req.params.id)) return;
+    const { name, location, description } = req.body || {};
+    const normalizedName = typeof name === "string" ? name.trim() : "";
+    if (!normalizedName) {
+      return res.status(400).json({ error: "Naam hulppost is verplicht" });
+    }
+
+    const existing = await db("aid_posts")
+      .where({ event_id: req.params.id, name: normalizedName })
+      .first();
+    if (existing) {
+      return res.status(400).json({ error: "Hulppost met deze naam bestaat al in dit evenement" });
+    }
+
+    const [id] = await db("aid_posts").insert({
+      event_id: req.params.id,
+      name: normalizedName,
+      location: typeof location === "string" ? location.trim() : "",
+      description: typeof description === "string" ? description.trim() : "",
+    });
+    await writeActionLog(db, req, {
+      event_id: req.params.id,
+      message: `Hulppost aangemaakt: ${normalizedName}`,
+    });
+    res.json({ id });
+  });
+
+  app.patch("/api/aid-posts/:id", requireRole(["ROOT", "ADMIN", "OPERATOR"]), async (req, res) => {
+    const aidPost = await db("aid_posts").where({ id: req.params.id }).first();
+    if (!aidPost) return res.status(404).json({ error: "Hulppost niet gevonden" });
+    if (!await ensureEventAccess(req, res, aidPost.event_id)) return;
+
+    const { name, location, description } = req.body || {};
+    const updatePayload: Record<string, any> = {};
+
+    if (typeof name === "string") {
+      const normalizedName = name.trim();
+      if (!normalizedName) return res.status(400).json({ error: "Naam hulppost is verplicht" });
+      const duplicate = await db("aid_posts")
+        .where({ event_id: aidPost.event_id, name: normalizedName })
+        .whereNot({ id: aidPost.id })
+        .first();
+      if (duplicate) {
+        return res.status(400).json({ error: "Hulppost met deze naam bestaat al in dit evenement" });
+      }
+      updatePayload.name = normalizedName;
+    }
+    if (typeof location === "string") {
+      updatePayload.location = location.trim();
+    }
+    if (typeof description === "string") {
+      updatePayload.description = description.trim();
+    }
+
+    if (Object.keys(updatePayload).length === 0) {
+      return res.status(400).json({ error: "Geen geldige velden om te updaten" });
+    }
+
+    await db("aid_posts").where({ id: req.params.id }).update(updatePayload);
+    await writeActionLog(db, req, {
+      event_id: aidPost.event_id,
+      message: `Hulppost bijgewerkt: ${updatePayload.name || aidPost.name}`,
+    });
+    res.json({ success: true });
+  });
+
   // Team Types
   app.get("/api/events/:id/team-types", requireAuth, async (req, res) => {
     if (!await ensureEventAccess(req, res, req.params.id)) return;
@@ -1592,7 +1771,19 @@ export async function createApp() {
   // Teams
   app.get("/api/events/:id/teams", requireAuth, async (req, res) => {
     if (!await ensureEventAccess(req, res, req.params.id)) return;
-    const teams = await db("teams").where({ event_id: req.params.id });
+    const viewerAidPostId = await getViewerAidPostIdForEvent(req, req.params.id);
+    const teamsQuery = db("teams as t")
+      .leftJoin("aid_posts as ap", "t.aid_post_id", "ap.id")
+      .where("t.event_id", req.params.id)
+      .select("t.*", "ap.name as aid_post_name");
+    if (req.session?.role === "VIEWER") {
+      if (viewerAidPostId) {
+        teamsQuery.andWhere("t.aid_post_id", viewerAidPostId);
+      } else {
+        teamsQuery.whereRaw("1 = 0");
+      }
+    }
+    const teams = await teamsQuery;
     const teamsWithMembers = await Promise.all(teams.map(async team => {
       const members = await db("team_members").where({ team_id: team.id });
       return { ...team, members };
@@ -1602,7 +1793,7 @@ export async function createApp() {
 
   app.post("/api/events/:id/teams", requireRole(["ROOT", "ADMIN", "OPERATOR"]), async (req, res) => {
     if (!await ensureEventAccess(req, res, req.params.id)) return;
-    const { name, type } = req.body;
+    const { name, type, aid_post_id } = req.body || {};
     try {
       const typeExists = await db("team_types")
         .where({ event_id: req.params.id, name: type })
@@ -1611,11 +1802,27 @@ export async function createApp() {
         return res.status(400).json({ error: "Onbekende teamsoort voor dit evenement" });
       }
 
-      const [id] = await db("teams").insert({ event_id: req.params.id, name, type, is_deployed: 1 });
+      const aidPostValidation = await validateAidPostForEvent(req.params.id, aid_post_id, {
+        allowNull: true,
+      });
+      if ("error" in aidPostValidation) {
+        return res.status(400).json({ error: aidPostValidation.error });
+      }
+
+      const [id] = await db("teams").insert({
+        event_id: req.params.id,
+        name,
+        type,
+        aid_post_id: aidPostValidation.aidPostId,
+        is_deployed: 1,
+      });
+      const aidPostName = aidPostValidation.aidPostId
+        ? (await db("aid_posts").where({ id: aidPostValidation.aidPostId }).select("name").first())?.name
+        : null;
       await writeActionLog(db, req, {
         event_id: req.params.id,
         team_id: id,
-        message: `Ploeg aangemaakt: ${name} (${type})`,
+        message: `Ploeg aangemaakt: ${name} (${type})${aidPostName ? ` - hulppost ${aidPostName}` : ""}`,
       });
       res.json({ id });
     } catch (error) {
@@ -1629,7 +1836,7 @@ export async function createApp() {
       if (!team) return res.status(404).json({ error: "Ploeg niet gevonden" });
       if (!await ensureEventAccess(req, res, team.event_id)) return;
 
-      const { name, type, is_deployed } = req.body || {};
+      const { name, type, is_deployed, aid_post_id } = req.body || {};
       const updatePayload: Record<string, any> = {};
 
       if (typeof name === "string" && name.trim()) {
@@ -1646,6 +1853,15 @@ export async function createApp() {
       }
       if (typeof is_deployed !== "undefined") {
         updatePayload.is_deployed = is_deployed ? 1 : 0;
+      }
+      if (typeof aid_post_id !== "undefined") {
+        const aidPostValidation = await validateAidPostForEvent(team.event_id, aid_post_id, {
+          allowNull: true,
+        });
+        if ("error" in aidPostValidation) {
+          return res.status(400).json({ error: aidPostValidation.error });
+        }
+        updatePayload.aid_post_id = aidPostValidation.aidPostId;
       }
 
       if (Object.keys(updatePayload).length === 0) {
@@ -1676,12 +1892,35 @@ export async function createApp() {
           message: `Ploeg "${newName}" gemarkeerd als ${Number(updatePayload.is_deployed) === 1 ? "ingezetbaar" : "niet-ingezet"}`,
         });
       }
+      if (typeof updatePayload.aid_post_id !== "undefined" && Number(updatePayload.aid_post_id || 0) !== Number(team.aid_post_id || 0)) {
+        const nextAidPost = updatePayload.aid_post_id
+          ? await db("aid_posts").where({ id: updatePayload.aid_post_id }).first()
+          : null;
+        await writeActionLog(db, req, {
+          event_id: team.event_id,
+          team_id: team.id,
+          message: `Ploeg "${newName}" gekoppeld aan hulppost "${nextAidPost?.name || "Geen hulppost"}"`,
+        });
+      }
 
       res.json({ success: true });
     } catch (error) {
       console.error("Error updating team:", error);
       res.status(500).json({ error: "Ploeg bijwerken mislukt" });
     }
+  });
+
+  app.delete("/api/teams/:id", requireRole(["ROOT", "ADMIN"]), async (req, res) => {
+    const team = await db("teams").where({ id: req.params.id }).first();
+    if (!team) return res.status(404).json({ error: "Ploeg niet gevonden" });
+    if (!await ensureEventAccess(req, res, team.event_id)) return;
+
+    await db("teams").where({ id: req.params.id }).del();
+    await writeActionLog(db, req, {
+      event_id: team.event_id,
+      message: `Ploeg verwijderd: ${team.name}`,
+    });
+    res.json({ success: true });
   });
 
   app.post("/api/teams/:id/members", requireRole(["ROOT", "ADMIN", "OPERATOR"]), async (req, res) => {
@@ -1724,6 +1963,7 @@ export async function createApp() {
   app.get("/api/events/:id/interventions", requireAuth, async (req, res) => {
     if (!await ensureEventAccess(req, res, req.params.id)) return;
     const now = Date.now();
+    const viewerAidPostId = await getViewerAidPostIdForEvent(req, req.params.id);
     const interventions = await db("interventions")
       .where("event_id", req.params.id)
       .orderBy("created_at", "asc");
@@ -1735,11 +1975,19 @@ export async function createApp() {
         .select("team_id", "started_at");
       const activeByTeam = new Map(activeHistory.map(h => [Number(h.team_id), h.started_at]));
 
-      const teams = await db("teams as t")
+      const teamsQuery = db("teams as t")
         .join("intervention_teams as it", "t.id", "it.team_id")
         .leftJoin("statuses as s", "it.status_id", "s.id")
         .select("t.*", "it.status_id", "s.name as status_name", "s.color as status_color", "s.is_closed as status_is_closed")
         .where("it.intervention_id", inter.id);
+      if (req.session?.role === "VIEWER") {
+        if (viewerAidPostId) {
+          teamsQuery.andWhere("t.aid_post_id", viewerAidPostId);
+        } else {
+          teamsQuery.whereRaw("1 = 0");
+        }
+      }
+      const teams = await teamsQuery;
 
       const teamsWithDuration = teams.map(team => {
         const statusStartedAt = activeByTeam.get(Number(team.id)) || null;
