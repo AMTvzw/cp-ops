@@ -19,19 +19,21 @@ interface Event {
   description: string;
 }
 
+const createEmptyEventForm = () => ({
+  name: '',
+  date: new Date().toISOString().split('T')[0],
+  end_date: '',
+  location: '',
+  organizer: '',
+  contact_info: '',
+  description: ''
+});
+
 export default function Dashboard() {
   const { user, logout, hasRole, settings, t, languageCode } = useUser();
   const [events, setEvents] = useState<Event[]>([]);
   const [showNewEvent, setShowNewEvent] = useState(false);
-  const [newEvent, setNewEvent] = useState({ 
-    name: '', 
-    date: new Date().toISOString().split('T')[0], 
-    end_date: '', 
-    location: '',
-    organizer: '',
-    contact_info: '',
-    description: '' 
-  });
+  const [newEvent, setNewEvent] = useState(createEmptyEventForm());
   
   const [showGlobalAnnouncement, setShowGlobalAnnouncement] = useState(false);
   const [globalAnnouncement, setGlobalAnnouncement] = useState({ message: '', bg_color: '#ef4444', is_active: false });
@@ -82,15 +84,7 @@ export default function Dashboard() {
     });
     if (res.ok) {
       setShowNewEvent(false);
-      setNewEvent({ 
-        name: '', 
-        date: new Date().toISOString().split('T')[0], 
-        end_date: '', 
-        location: '',
-        organizer: '',
-        contact_info: '',
-        description: '' 
-      });
+      setNewEvent(createEmptyEventForm());
       fetchEvents();
     } else {
       alert(t('dashboard.eventCreateError'));
@@ -143,7 +137,10 @@ export default function Dashboard() {
           )}
           {hasRole(['ROOT', 'ADMIN']) && (
             <button 
-              onClick={() => setShowNewEvent(true)}
+              onClick={() => {
+                setNewEvent(createEmptyEventForm());
+                setShowNewEvent(true);
+              }}
               className="text-white px-4 py-2 rounded-xl font-bold flex items-center justify-center gap-2 transition-all shadow-lg w-full sm:w-auto"
               style={{ backgroundColor: settings.primary_color }}
             >
@@ -215,7 +212,10 @@ export default function Dashboard() {
             <p className="text-slate-400 font-medium">{t('dashboard.noEvents')}</p>
             {hasRole(['ROOT', 'ADMIN']) && (
               <button 
-                onClick={() => setShowNewEvent(true)}
+                onClick={() => {
+                  setNewEvent(createEmptyEventForm());
+                  setShowNewEvent(true);
+                }}
                 className="mt-4 font-bold hover:underline"
                 style={{ color: settings.primary_color }}
               >
@@ -294,7 +294,7 @@ export default function Dashboard() {
                   />
                 </div>
                 <div className="md:col-span-2">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">Contact Informatie</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Contactinformatie</label>
                   <input
                     type="text"
                     value={newEvent.contact_info}
@@ -317,7 +317,10 @@ export default function Dashboard() {
               <div className="flex gap-3 mt-8">
                 <button 
                   type="button"
-                  onClick={() => setShowNewEvent(false)}
+                  onClick={() => {
+                    setNewEvent(createEmptyEventForm());
+                    setShowNewEvent(false);
+                  }}
                   className="flex-1 px-4 py-3 border border-slate-200 rounded-xl text-slate-600 font-bold hover:bg-slate-50 transition-all"
                 >
                   Annuleren
@@ -343,7 +346,7 @@ export default function Dashboard() {
             className="bg-white rounded-3xl p-6 sm:p-8 w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto"
           >
             <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
-              <Megaphone className="text-red-700" /> Globale Melding
+              <Megaphone className="text-red-700" /> Globale melding
             </h2>
             <form onSubmit={handleUpdateGlobalAnnouncement} className="space-y-4">
               <div>

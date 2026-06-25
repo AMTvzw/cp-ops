@@ -338,6 +338,18 @@ export async function initDb() {
     });
   }
 
+  // Current Team Status Table (for teams that are not linked to an intervention)
+  if (!await db.schema.hasTable('team_current_statuses')) {
+    await db.schema.createTable('team_current_statuses', (table) => {
+      table.integer('team_id').unsigned().primary().references('id').inTable('teams').onDelete('CASCADE');
+      table.integer('event_id').unsigned().notNullable().references('id').inTable('events').onDelete('CASCADE');
+      table.integer('status_id').unsigned().references('id').inTable('statuses').onDelete('SET NULL');
+      table.timestamp('updated_at').defaultTo(db.fn.now());
+      table.index(['event_id']);
+      table.index(['status_id']);
+    });
+  }
+
   // Intervention Messages Table
   if (!await db.schema.hasTable('intervention_messages')) {
     await db.schema.createTable('intervention_messages', (table) => {
@@ -480,6 +492,13 @@ export async function initDb() {
         name: language.name,
         is_active: 1,
       });
+    } else if (existing.name !== language.name || Number(existing.is_active) !== 1) {
+      await db('app_languages')
+        .where({ code: language.code })
+        .update({
+          name: language.name,
+          is_active: 1,
+        });
     }
   }
 
@@ -589,6 +608,28 @@ export async function initDb() {
           eventStatuses[0];
         if (preferredBusy) {
           await db('statuses').where({ id: preferredBusy.id }).update({ is_busy: 1 });
+        }
+      }
+    }
+
+    const startStatus = await db('statuses')
+      .where({ event_id: event.id, is_start: 1 })
+      .orderBy('id', 'asc')
+      .first();
+    if (startStatus) {
+      const eventTeams = await db('teams')
+        .where({ event_id: event.id })
+        .select('id');
+      for (const team of eventTeams) {
+        const existingCurrentStatus = await db('team_current_statuses')
+          .where({ team_id: team.id })
+          .first();
+        if (!existingCurrentStatus) {
+          await db('team_current_statuses').insert({
+            team_id: team.id,
+            event_id: event.id,
+            status_id: startStatus.id,
+          });
         }
       }
     }

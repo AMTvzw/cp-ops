@@ -151,16 +151,6 @@ Notes:
 docker build -f deploy/docker/Dockerfile -t cp-ops:latest .
 ```
 
-Alternative Dockerfiles:
-- Standard hosts (non-Raspberry Pi):
-```bash
-docker build -f deploy/docker/Dockerfile.standard -t cp-ops:latest .
-```
-- Raspberry Pi / ARM compatibility:
-```bash
-docker build -f deploy/docker/Dockerfile.raspberrypi -t cp-ops:latest .
-```
-
 ### Run container
 
 ```bash
@@ -179,11 +169,24 @@ docker run --rm -p 31987:31987 \
 docker compose -f deploy/docker/docker-compose.yml up -d --build
 ```
 
+SQLite is the default. To start the optional local MariaDB service and connect CP-OPS to it:
+
+```bash
+DB_CLIENT=mysql2 \
+DB_HOST=mariadb \
+DB_USER=cp_ops \
+DB_PASSWORD=replace-this-db-password \
+DB_NAME=cp_ops \
+UPLOAD_STORAGE=db \
+MARIADB_DATABASE=cp_ops \
+MARIADB_USER=cp_ops \
+MARIADB_PASSWORD=replace-this-db-password \
+MARIADB_ROOT_PASSWORD=replace-this-root-db-password \
+docker compose --profile mariadb -f deploy/docker/docker-compose.yml up -d --build
+```
+
 Files included:
 - `deploy/docker/Dockerfile`
-- `deploy/docker/Dockerfile.standard`
-- `deploy/docker/Dockerfile.raspberrypi`
-- `.dockerignore`
 - `deploy/docker/docker-compose.yml`
 - `deploy/docker/docker-compose.server.yml` (direct server use with `.env` and bind mounts)
 
@@ -191,29 +194,6 @@ Direct server command:
 
 ```bash
 docker compose -f deploy/docker/docker-compose.server.yml up -d --build
-```
-
-## One-Command Raspberry Pi Setup (Auto-start on Boot)
-
-Run this on the Raspberry Pi:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/AMTvzw/cp-ops/main/deploy/pi/bootstrap.sh | sudo bash
-```
-
-What it does:
-- Installs Docker (if needed)
-- Clones/updates CP-OPS in `/opt/CP-OPS`
-- Creates `.env` from `.env.example` (if missing)
-- Auto-generates `SESSION_SECRET` and `DEFAULT_ROOT_PASSWORD` if placeholders are found
-- Creates/enables a systemd service so the app starts automatically after power-on
-
-Optional parameters:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/AMTvzw/cp-ops/main/deploy/pi/bootstrap.sh | sudo bash -s -- \
-  --app-dir /opt/CP-OPS \
-  --repo-url https://github.com/AMTvzw/cp-ops.git
 ```
 
 ## Run with Kubernetes

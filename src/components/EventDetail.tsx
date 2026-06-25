@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { 
   Plus, Users, Activity, FileText, Settings, 
   ChevronRight, MapPin, Clock, CheckCircle2, 
@@ -47,6 +47,13 @@ interface Team {
   is_deployed: number;
   aid_post_id?: number | null;
   aid_post_name?: string | null;
+  current_status_id?: number | null;
+  current_status_name?: string | null;
+  current_status_color?: string | null;
+  current_status_updated_at?: string | null;
+  current_status_is_start?: number | null;
+  current_status_is_closed?: number | null;
+  current_status_is_busy?: number | null;
   members: TeamMember[];
 }
 
@@ -76,6 +83,18 @@ interface InterventionStatusDuration {
   total_seconds: number;
 }
 
+interface InterventionTeamHistory {
+  id: number;
+  team_id: number;
+  team_name: string;
+  team_type?: string | null;
+  status_id: number | null;
+  status_name: string | null;
+  status_color?: string | null;
+  started_at: string;
+  ended_at?: string | null;
+}
+
 interface Intervention {
   id: number;
   intervention_number?: number;
@@ -86,6 +105,7 @@ interface Intervention {
   closed_at: string | null;
   open_seconds?: number;
   status_durations?: InterventionStatusDuration[];
+  team_history?: InterventionTeamHistory[];
   teams: TeamInIntervention[];
 }
 
@@ -116,6 +136,7 @@ interface InterventionMessage {
 interface InterventionEditState {
   location: string;
   description: string;
+  addTeamStatusId: number;
   addTeamIds: number[];
   selectedAddTeamId: string;
 }
@@ -147,12 +168,12 @@ type EventTabConfig = {
 };
 
 const EVENT_TABS: EventTabConfig[] = [
-  { id: 'info', label: 'Event info', icon: FileText },
-  { id: 'interventions', label: 'Interventions', icon: Activity },
-  { id: 'team_status', label: 'Team status', icon: Users },
-  { id: 'teams', label: 'Teams', icon: Users },
-  { id: 'logs', label: 'Logs', icon: FileText },
-  { id: 'settings', label: 'Settings', icon: Settings, roles: ['ROOT', 'ADMIN'] },
+  { id: 'info', label: 'Evenementinfo', icon: FileText },
+  { id: 'interventions', label: 'Interventies', icon: Activity },
+  { id: 'team_status', label: 'Ploegstatus', icon: Users },
+  { id: 'teams', label: 'Ploegen', icon: Users },
+  { id: 'logs', label: 'Logboek', icon: FileText },
+  { id: 'settings', label: 'Instellingen', icon: Settings, roles: ['ROOT', 'ADMIN'] },
 ];
 
 const isEventAssignee = (value: unknown): value is EventAssignee => {
@@ -173,10 +194,15 @@ const isEventAssignee = (value: unknown): value is EventAssignee => {
 export default function EventDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user, logout, hasRole, settings, languageCode, t } = useUser();
   const isViewer = user?.role === 'VIEWER';
+  const requestedTab = searchParams.get('tab') as EventTab | null;
+  const initialTab: EventTab = requestedTab && EVENT_TABS.some(tab => tab.id === requestedTab)
+    ? requestedTab
+    : 'interventions';
   const [event, setEvent] = useState<Event | null>(null);
-  const [activeTab, setActiveTab] = useState<EventTab>('interventions');
+  const [activeTab, setActiveTabState] = useState<EventTab>(initialTab);
   const [settingsSubTab, setSettingsSubTab] = useState<'access' | 'team_types' | 'statuses'>('access');
   const [interventionTab, setInterventionTab] = useState<'open' | 'closed'>('open');
   const [interventionView, setInterventionView] = useState<'cards' | 'list'>('cards');
@@ -243,16 +269,40 @@ export default function EventDetail() {
   const [eventAssignedUserIds, setEventAssignedUserIds] = useState<number[]>([]);
   const [eventAssignedAidPostIds, setEventAssignedAidPostIds] = useState<Record<number, string>>({});
   const [savingEventAssignments, setSavingEventAssignments] = useState(false);
+  const [teamStatusDrafts, setTeamStatusDrafts] = useState<Record<number, string>>({});
+  const [statusAidPostDrafts, setStatusAidPostDrafts] = useState<Record<string, string>>({});
+
+  const setActiveTab = (nextTab: EventTab) => {
+    setActiveTabState(nextTab);
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.set('tab', nextTab);
+    setSearchParams(nextParams, { replace: true });
+  };
 
   useEffect(() => {
     void fetchData();
   }, [id]);
 
   useEffect(() => {
+    const nextTab = searchParams.get('tab') as EventTab | null;
+    if (nextTab && EVENT_TABS.some(tab => tab.id === nextTab) && nextTab !== activeTab) {
+      setActiveTabState(nextTab);
+    }
+  }, [searchParams, activeTab]);
+
+  useEffect(() => {
     if (isViewer && activeTab !== 'team_status') {
       setActiveTab('team_status');
     }
   }, [isViewer, activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'team_status' && activeTab !== 'interventions') return;
+    const interval = window.setInterval(() => {
+      void fetchData({ background: true });
+    }, 15000);
+    return () => window.clearInterval(interval);
+  }, [activeTab, id]);
 
   useEffect(() => {
     fetchLogs(true);
@@ -273,16 +323,19 @@ export default function EventDetail() {
     const typeDrafts: Record<number, string> = {};
     const aidPostDrafts: Record<number, string> = {};
     const deployDrafts: Record<number, boolean> = {};
+    const statusDrafts: Record<number, string> = {};
     for (const team of teams) {
       nameDrafts[team.id] = team.name;
       typeDrafts[team.id] = team.type;
       aidPostDrafts[team.id] = team.aid_post_id ? String(team.aid_post_id) : '';
       deployDrafts[team.id] = Number(team.is_deployed) === 1;
+      statusDrafts[team.id] = team.current_status_id ? String(team.current_status_id) : '';
     }
     setTeamNameDrafts(nameDrafts);
     setTeamTypeDrafts(typeDrafts);
     setTeamAidPostDrafts(aidPostDrafts);
     setTeamDeployedDrafts(deployDrafts);
+    setTeamStatusDrafts(statusDrafts);
   }, [teams]);
 
   useEffect(() => {
@@ -492,6 +545,30 @@ export default function EventDetail() {
     return statuses[0]?.id || 0;
   };
 
+  const getStartStatusId = () => {
+    const start = statuses.find(s => Number(s.is_start) === 1);
+    if (start) return start.id;
+    return statuses[0]?.id || 0;
+  };
+
+  const emptyInterventionForm = () => ({
+    title: '',
+    location: '',
+    description: '',
+    status_id: getDefaultInterventionStatusId(),
+    team_ids: [] as number[],
+  });
+
+  const openNewInterventionModal = () => {
+    setNewIntervention(emptyInterventionForm());
+    setShowNewIntervention(true);
+  };
+
+  const cancelNewInterventionModal = () => {
+    setNewIntervention(emptyInterventionForm());
+    setShowNewIntervention(false);
+  };
+
   const isStatusStartOrClosed = (statusId?: number | null) => {
     if (!statusId) return false;
     const status = statuses.find(s => s.id === Number(statusId));
@@ -516,13 +593,18 @@ export default function EventDetail() {
 
   const handleAddIntervention = async (e: React.FormEvent) => {
     e.preventDefault();
-    await fetch(`/api/events/${id}/interventions`, {
+    const res = await fetch(`/api/events/${id}/interventions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newIntervention)
     });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      alert(data?.error || 'Interventie aanmaken mislukt');
+      return;
+    }
     setShowNewIntervention(false);
-    setNewIntervention({ title: '', location: '', description: '', status_id: getDefaultInterventionStatusId(), team_ids: [] });
+    setNewIntervention(emptyInterventionForm());
     void fetchData({ background: true });
   };
 
@@ -531,6 +613,7 @@ export default function EventDetail() {
     setInterventionEdit({
       location: inter.location || '',
       description: inter.description || '',
+      addTeamStatusId: getDefaultInterventionStatusId(),
       addTeamIds: [],
       selectedAddTeamId: '',
     });
@@ -539,20 +622,6 @@ export default function EventDetail() {
   const cancelEditIntervention = () => {
     setEditingInterventionId(null);
     setInterventionEdit(null);
-  };
-
-  const addTeamToInterventionEdit = () => {
-    if (!interventionEdit?.selectedAddTeamId) return;
-    const teamId = Number(interventionEdit.selectedAddTeamId);
-    if (!teamId) return;
-    setInterventionEdit(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        addTeamIds: prev.addTeamIds.includes(teamId) ? prev.addTeamIds : [...prev.addTeamIds, teamId],
-        selectedAddTeamId: '',
-      };
-    });
   };
 
   const saveInterventionEdit = async (interventionId: number) => {
@@ -564,7 +633,7 @@ export default function EventDetail() {
         location: interventionEdit.location.trim(),
         description: interventionEdit.description.trim(),
         add_team_ids: interventionEdit.addTeamIds,
-        default_status_id: getDefaultInterventionStatusId() || null,
+        default_status_id: interventionEdit.addTeamStatusId || getDefaultInterventionStatusId() || null,
       }),
     });
 
@@ -580,10 +649,15 @@ export default function EventDetail() {
 
   const handleUpdateTeamStatus = async (interId: number, teamId: number, statusId: number) => {
     if (!hasRole(['ROOT', 'ADMIN', 'OPERATOR'])) return;
+    const statusKey = getTeamStatusEditorKey(interId, teamId);
+    const destinationAidPostId = statusAidPostDrafts[statusKey];
     const res = await fetch(`/api/interventions/${interId}/teams/${teamId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status_id: statusId })
+      body: JSON.stringify({
+        status_id: statusId,
+        aid_post_id: destinationAidPostId ? Number(destinationAidPostId) : null,
+      })
     });
     if (!res.ok) {
       const data = await res.json().catch(() => null);
@@ -624,6 +698,46 @@ export default function EventDetail() {
     }
 
     setExpandedTeamStatusKey(null);
+    setStatusAidPostDrafts(prev => ({ ...prev, [statusKey]: '' }));
+    void fetchData({ background: true });
+  };
+
+  const handleUnlinkTeamFromIntervention = async (interId: number, teamId: number, label = 'ontkoppelen') => {
+    if (!hasRole(['ROOT', 'ADMIN', 'OPERATOR'])) return;
+    const isOvtz = label.toUpperCase() === 'OVTZ';
+    const res = await fetch(`/api/interventions/${interId}/teams/${teamId}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status_id: getStartStatusId() || null,
+        action: isOvtz ? 'ovtz' : 'unlink',
+      }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      alert(data?.error || `Ploeg ${label} mislukt`);
+      return;
+    }
+    setExpandedTeamStatusKey(null);
+    void fetchData({ background: true });
+    fetchLogs(true);
+  };
+
+  const handleUpdateStandaloneTeamStatus = async (teamId: number, statusId: number) => {
+    if (!hasRole(['ROOT', 'ADMIN', 'OPERATOR'])) return;
+    const res = await fetch(`/api/teams/${teamId}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status_id: statusId }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      alert(data?.error || 'Ploegstatus wijzigen mislukt');
+      return;
+    }
+    setTeamStatusDrafts(prev => ({ ...prev, [teamId]: String(statusId) }));
+    void fetchData({ background: true });
+    fetchLogs(true);
   };
 
   const handleAddTeam = async (e: React.FormEvent) => {
@@ -983,7 +1097,7 @@ export default function EventDetail() {
 
   const handleCloseEmptyIntervention = async (interventionId: number, title: string) => {
     if (!hasRole(['ROOT', 'ADMIN', 'OPERATOR'])) return;
-    if (!confirm(`Interventie "${title}" sluiten? Dit kan alleen als er nooit een ploeg gekoppeld is geweest.`)) return;
+    if (!confirm(`Interventie "${title}" sluiten? Dit kan alleen als er geen actieve ploeg meer gekoppeld is.`)) return;
 
     const res = await fetch(`/api/interventions/${interventionId}/close-empty`, {
       method: 'PATCH',
@@ -1441,11 +1555,11 @@ export default function EventDetail() {
               <h2 className="text-xl font-semibold">Interventies</h2>
               {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && (
                 <button
-                  onClick={() => setShowNewIntervention(true)}
+                  onClick={openNewInterventionModal}
                   className="text-white px-4 py-2 rounded-lg flex items-center justify-center gap-2 transition-colors text-sm font-medium w-full sm:w-auto"
                   style={{ backgroundColor: settings.primary_color }}
                 >
-                  <Plus className="w-4 h-4" /> Nieuwe Interventie
+                  <Plus className="w-4 h-4" /> Nieuwe interventie
                 </button>
               )}
             </div>
@@ -1503,7 +1617,7 @@ export default function EventDetail() {
                           #{inter.intervention_number ?? '-'} {inter.title}
                         </h3>
                         <div className="flex items-center gap-2">
-                          {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && !inter.closed_at && inter.teams.length === 0 && (inter.status_durations?.length || 0) === 0 && (
+                          {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && !inter.closed_at && inter.teams.length === 0 && (
                             <button
                               onClick={() => handleCloseEmptyIntervention(inter.id, inter.title)}
                               className="text-slate-300 hover:text-emerald-600 transition-colors"
@@ -1585,41 +1699,97 @@ export default function EventDetail() {
                           {!inter.closed_at && (
                             <div className="grid grid-cols-1 gap-3">
                               <div>
+                                <label className="block text-xs font-semibold text-slate-600 mb-1">
+                                  Initiële status voor nieuwe ploegen
+                                </label>
+                                <select
+                                  value={interventionEdit.addTeamStatusId}
+                                  onChange={(e) =>
+                                    setInterventionEdit(prev => prev ? { ...prev, addTeamStatusId: Number(e.target.value) } : prev)
+                                  }
+                                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
+                                >
+                                  {statuses.map(s => (
+                                    <option key={s.id} value={s.id}>
+                                      {s.name}
+                                      {s.is_busy ? ' (bezig)' : s.is_start ? ' (begin)' : s.is_closed ? ' (eind)' : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                                {interventionEdit.addTeamIds.length > 0 && (
+                                  <p className="mt-1 text-xs text-slate-500">
+                                    Deze status wordt toegepast bij opslaan op de ploegen die hieronder klaarstaan.
+                                  </p>
+                                )}
+                              </div>
+                              <div>
                                 <label className="block text-xs font-semibold text-slate-600 mb-1">Ploeg toevoegen</label>
-                                <div className="flex flex-col sm:flex-row gap-2">
-                                  <select
-                                    value={interventionEdit.selectedAddTeamId}
-                                    onChange={(e) =>
-                                      setInterventionEdit(prev => prev ? { ...prev, selectedAddTeamId: e.target.value } : prev)
-                                    }
-                                    className="flex-1 px-3 py-2 rounded-lg border border-slate-200 text-sm"
-                                  >
-                                    <option value="">Kies ploeg...</option>
-                                    {teams
-                                      .filter(t => {
-                                        const currentlyLinked = inter.teams.some(it => it.id === t.id);
-                                        const pendingAdded = interventionEdit.addTeamIds.includes(t.id);
-                                        const isDeployed = Number(t.is_deployed) === 1;
-                                        return (!currentlyLinked || pendingAdded)
-                                          && canTeamBeAddedToIntervention(t.id, inter.id)
-                                          && isDeployed;
-                                      })
-                                      .filter(t => {
-                                        const currentlyLinked = inter.teams.some(it => it.id === t.id);
-                                        return !currentlyLinked;
-                                      })
-                                      .map(t => (
-                                        <option key={t.id} value={t.id}>{t.name}</option>
-                                      ))}
-                                  </select>
-                                  <button
-                                    type="button"
-                                    onClick={addTeamToInterventionEdit}
-                                    className="px-3 py-2 rounded-lg border border-slate-200 text-sm hover:bg-white w-full sm:w-auto"
-                                  >
-                                    Toevoegen
-                                  </button>
-                                </div>
+                                <select
+                                  value={interventionEdit.selectedAddTeamId}
+                                  onChange={(e) => {
+                                    const teamId = Number(e.target.value);
+                                    setInterventionEdit(prev => {
+                                      if (!prev) return prev;
+                                      if (!teamId) return { ...prev, selectedAddTeamId: '' };
+                                      return {
+                                        ...prev,
+                                        addTeamIds: prev.addTeamIds.includes(teamId)
+                                          ? prev.addTeamIds
+                                          : [...prev.addTeamIds, teamId],
+                                        selectedAddTeamId: '',
+                                      };
+                                    });
+                                  }}
+                                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
+                                >
+                                  <option value="">Kies ploeg om klaar te zetten...</option>
+                                  {teams
+                                    .filter(t => {
+                                      const currentlyLinked = inter.teams.some(it => it.id === t.id);
+                                      const pendingAdded = interventionEdit.addTeamIds.includes(t.id);
+                                      const isDeployed = Number(t.is_deployed) === 1;
+                                      return (!currentlyLinked && !pendingAdded)
+                                        && canTeamBeAddedToIntervention(t.id, inter.id)
+                                        && isDeployed;
+                                    })
+                                    .map(t => (
+                                      <option key={t.id} value={t.id}>{t.name}</option>
+                                    ))}
+                                </select>
+                                {interventionEdit.addTeamIds.length > 0 && (
+                                  <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                                    <p className="text-xs font-semibold uppercase tracking-wider text-emerald-700 mb-2">
+                                      Klaar om te koppelen bij opslaan
+                                    </p>
+                                    <div className="space-y-2">
+                                    {interventionEdit.addTeamIds.map(teamId => {
+                                      const pendingTeam = teams.find(t => t.id === teamId);
+                                      if (!pendingTeam) return null;
+                                      return (
+                                        <div
+                                          key={teamId}
+                                          className="flex items-center justify-between gap-3 rounded-md bg-white border border-emerald-100 px-3 py-2 text-sm text-emerald-900"
+                                        >
+                                          <span className="font-medium">{pendingTeam.name}</span>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              setInterventionEdit(prev => prev
+                                                ? { ...prev, addTeamIds: prev.addTeamIds.filter(id => id !== teamId) }
+                                                : prev
+                                              )
+                                            }
+                                            className="text-emerald-500 hover:text-emerald-700"
+                                            title="Nog niet opgeslagen ploeg verwijderen"
+                                          >
+                                            <X className="w-4 h-4" />
+                                          </button>
+                                        </div>
+                                      );
+                                    })}
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             </div>
                           )}
@@ -1638,7 +1808,7 @@ export default function EventDetail() {
                               className="px-3 py-2 rounded-lg text-white text-sm"
                               style={{ backgroundColor: settings.primary_color }}
                             >
-                              Opslaan
+                              {interventionEdit.addTeamIds.length > 0 ? 'Opslaan en koppelen' : 'Opslaan'}
                             </button>
                           </div>
                         </div>
@@ -1646,9 +1816,7 @@ export default function EventDetail() {
 
                       <div className="space-y-4">
                         {(() => {
-                          const visibleTeams = interventionView === 'cards'
-                            ? inter.teams.filter(team => Number(team.status_is_closed) !== 1)
-                            : inter.teams;
+                          const visibleTeams = inter.teams;
 
                           if (visibleTeams.length === 0) {
                             return (
@@ -1703,6 +1871,23 @@ export default function EventDetail() {
                                     )}
                                     {isExpanded && (
                                       <div className="space-y-2">
+                                        <div>
+                                          <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                                            Bestemmingshulppost bij afvoer
+                                          </label>
+                                          <select
+                                            value={statusAidPostDrafts[statusKey] || ''}
+                                            onChange={(e) =>
+                                              setStatusAidPostDrafts(prev => ({ ...prev, [statusKey]: e.target.value }))
+                                            }
+                                            className="w-full px-2 py-1.5 rounded border border-slate-200 text-xs"
+                                          >
+                                            <option value="">Geen wijziging</option>
+                                            {aidPosts.map(post => (
+                                              <option key={post.id} value={post.id}>{post.name}</option>
+                                            ))}
+                                          </select>
+                                        </div>
                                         <div className="flex flex-wrap gap-1">
                                           {statuses.map(s => (
                                             <button
@@ -1719,13 +1904,30 @@ export default function EventDetail() {
                                             </button>
                                           ))}
                                         </div>
-                                        <button
-                                          type="button"
-                                          onClick={() => setExpandedTeamStatusKey(null)}
-                                          className="text-xs text-slate-500 hover:text-slate-700"
-                                        >
-                                          Sluiten
-                                        </button>
+                                        <div className="flex flex-wrap gap-2">
+                                          <button
+                                            type="button"
+                                            onClick={() => handleUnlinkTeamFromIntervention(inter.id, team.id)}
+                                            className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+                                          >
+                                            Ontkoppelen
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleUnlinkTeamFromIntervention(inter.id, team.id, 'OVTZ')}
+                                            className="text-xs px-2 py-1 rounded border border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                                            title="Ontkoppelen en radiografisch beschikbaar zetten"
+                                          >
+                                            OVTZ
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => setExpandedTeamStatusKey(null)}
+                                            className="text-xs text-slate-500 hover:text-slate-700"
+                                          >
+                                            Sluiten
+                                          </button>
+                                        </div>
                                       </div>
                                     )}
                                   </>
@@ -1739,7 +1941,7 @@ export default function EventDetail() {
                       {inter.closed_at && (inter.status_durations?.length || 0) > 0 && (
                         <div className="mt-4 pt-3 border-t border-slate-100">
                           <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
-                            Duur Per Status
+                            Duur per status
                           </p>
                           <div className="space-y-1">
                             {inter.status_durations?.map((d) => (
@@ -1752,9 +1954,43 @@ export default function EventDetail() {
                         </div>
                       )}
 
+                      {inter.closed_at && (inter.team_history?.length || 0) > 0 && (
+                        <div className="mt-4 pt-3 border-t border-slate-100">
+                          <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                            Ploeggeschiedenis
+                          </p>
+                          <div className="space-y-2 max-h-56 overflow-y-auto">
+                            {inter.team_history?.map((entry) => (
+                              <div key={entry.id} className="rounded-lg bg-white border border-slate-100 p-2 text-xs text-slate-600">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-semibold text-slate-800">{entry.team_name}</span>
+                                  <span
+                                    className="px-2 py-0.5 rounded text-[10px] font-bold text-white uppercase"
+                                    style={{ backgroundColor: entry.status_color || '#64748b' }}
+                                  >
+                                    {entry.status_name || 'Geen status'}
+                                  </span>
+                                </div>
+                                <div className="mt-1">
+                                  {format(new Date(entry.started_at), 'dd-MM-yyyy HH:mm:ss')}
+                                  {' tot '}
+                                  {entry.ended_at ? format(new Date(entry.ended_at), 'dd-MM-yyyy HH:mm:ss') : 'heden'}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                       <div className="mt-4 pt-3 border-t border-slate-100 space-y-2">
                         <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Meldingen</p>
-                        <div className="flex flex-col sm:flex-row gap-2">
+                        <form
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            void handleAddInterventionMessage(inter.id);
+                          }}
+                          className="flex flex-col sm:flex-row gap-2"
+                        >
                           <input
                             type="text"
                             value={newMessageByIntervention[inter.id] || ''}
@@ -1763,13 +1999,13 @@ export default function EventDetail() {
                             className="flex-1 px-3 py-2 rounded-lg border border-slate-200 text-sm"
                           />
                           <button
-                            onClick={() => handleAddInterventionMessage(inter.id)}
+                            type="submit"
                             className="px-3 py-2 rounded-lg text-white text-sm w-full sm:w-auto flex items-center justify-center"
                             style={{ backgroundColor: settings.primary_color }}
                           >
                             <Send className="w-4 h-4" />
                           </button>
-                        </div>
+                        </form>
                         <div className="space-y-2 max-h-40 overflow-y-auto">
                           {(messagesByIntervention[inter.id] || []).map(msg => (
                             <div key={msg.id} className="p-2 rounded-lg bg-slate-50 border border-slate-100">
@@ -1980,7 +2216,7 @@ export default function EventDetail() {
                                 className="flex-1 py-2 rounded-lg text-white text-xs font-medium"
                                 style={{ backgroundColor: settings.primary_color }}
                               >
-                                Naam Opslaan
+                                Naam opslaan
                               </button>
                               <button
                                 type="button"
@@ -2072,7 +2308,59 @@ export default function EventDetail() {
                     </div>
 
                     {openAssignments.length === 0 ? (
-                      <div className="text-sm text-slate-400 italic">Geen actieve interventies.</div>
+                      <div className="space-y-3">
+                        <div className="text-sm text-slate-500">
+                          Geen actieve interventies.
+                        </div>
+                        <div className="rounded-lg bg-slate-50 border border-slate-100 p-3">
+                          <div className="flex items-center justify-between gap-2 mb-2">
+                            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                              Radiostatus
+                            </span>
+                            <span
+                              className="px-2 py-0.5 rounded text-[10px] font-bold text-white uppercase"
+                              style={{ backgroundColor: team.current_status_color || '#64748b' }}
+                            >
+                              {team.current_status_name || 'Geen status'}
+                            </span>
+                          </div>
+                          {team.current_status_updated_at && (
+                            <div className="text-xs text-slate-500 mb-2">
+                              Sinds: {formatDuration(
+                                getLiveStatusDuration(team.current_status_updated_at, null, false)
+                              )}
+                            </div>
+                          )}
+                          {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && (
+                            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_auto] gap-2 min-w-0">
+                              <select
+                                value={teamStatusDrafts[team.id] || ''}
+                                onChange={(e) => setTeamStatusDrafts(prev => ({ ...prev, [team.id]: e.target.value }))}
+                                className="w-full min-w-0 px-3 py-2 rounded-lg border border-slate-200 text-sm"
+                              >
+                                <option value="">Kies status...</option>
+                                {statuses.map(status => (
+                                  <option key={status.id} value={status.id}>
+                                    {status.name}
+                                    {status.is_start ? ' (radiografisch beschikbaar)' : ''}
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const nextStatusId = Number(teamStatusDrafts[team.id]);
+                                  if (nextStatusId) void handleUpdateStandaloneTeamStatus(team.id, nextStatusId);
+                                }}
+                                className="w-full lg:w-auto px-3 py-2 rounded-lg text-white text-sm whitespace-nowrap"
+                                style={{ backgroundColor: settings.primary_color }}
+                              >
+                                Opslaan
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     ) : (
                       <div className="space-y-2">
                         {openAssignments.map(({ intervention, assignment }) => (
@@ -2124,7 +2412,9 @@ export default function EventDetail() {
                   >
                     <option value="">Geen interventie</option>
                     {interventions.map(inter => (
-                      <option key={inter.id} value={inter.id}>{inter.title}</option>
+                      <option key={inter.id} value={inter.id}>
+                        #{inter.intervention_number ?? '-'} {inter.title}
+                      </option>
                     ))}
                   </select>
                   <select
@@ -2184,7 +2474,9 @@ export default function EventDetail() {
               >
                 <option value="">Alle interventies</option>
                 {interventions.map(inter => (
-                  <option key={inter.id} value={inter.id}>{inter.title}</option>
+                  <option key={inter.id} value={inter.id}>
+                    #{inter.intervention_number ?? '-'} {inter.title}
+                  </option>
                 ))}
               </select>
             </div>
@@ -2192,8 +2484,11 @@ export default function EventDetail() {
             <div className="space-y-4">
               {logs.map((log) => {
                 const teamName = log.team_id ? teams.find(t => t.id === log.team_id)?.name : null;
-                const interventionTitle = log.intervention_id
-                  ? interventions.find(i => i.id === log.intervention_id)?.title
+                const logIntervention = log.intervention_id
+                  ? interventions.find(i => i.id === log.intervention_id)
+                  : null;
+                const interventionTitle = logIntervention
+                  ? `#${logIntervention.intervention_number ?? '-'} ${logIntervention.title}`
                   : null;
                 return (
                   <div key={log.id} className="p-4 bg-white rounded-xl border border-slate-100 shadow-sm">
@@ -2365,7 +2660,7 @@ export default function EventDetail() {
                     disabled={savingEventAssignments}
                     className="w-full bg-slate-900 text-white py-2 rounded-lg text-sm font-medium hover:bg-slate-800 disabled:opacity-60"
                   >
-                    {savingEventAssignments ? 'Opslaan...' : 'Toegang Opslaan'}
+                    {savingEventAssignments ? 'Opslaan...' : 'Toegang opslaan'}
                   </button>
                 </div>
               </section>
@@ -2373,7 +2668,7 @@ export default function EventDetail() {
 
             {settingsSubTab === 'team_types' && (
               <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 md:p-6">
-                <h3 className="text-lg font-semibold mb-4">Teamsoorten Beheren</h3>
+                <h3 className="text-lg font-semibold mb-4">Teamsoorten beheren</h3>
                 <details open className="border border-slate-200 rounded-xl overflow-hidden mb-4">
                   <summary className="cursor-pointer px-4 py-3 bg-slate-50 font-semibold text-slate-800">Bestaande teamsoorten</summary>
                   <div className="p-4 space-y-2">
@@ -2439,7 +2734,7 @@ export default function EventDetail() {
                   <summary className="cursor-pointer px-4 py-3 bg-slate-50 font-semibold text-slate-800">Nieuwe teamsoort</summary>
                   <div className="p-4">
                     <form onSubmit={handleAddTeamType} className="p-4 bg-slate-100 rounded-xl space-y-4">
-                      <h4 className="text-sm font-bold text-slate-600 uppercase">Nieuwe Teamsoort</h4>
+                      <h4 className="text-sm font-bold text-slate-600 uppercase">Nieuwe teamsoort</h4>
                       <input
                         type="text"
                         placeholder="Bijv. Verkeer"
@@ -2449,7 +2744,7 @@ export default function EventDetail() {
                         required
                       />
                       <button className="w-full bg-slate-800 text-white py-2 rounded-lg text-sm font-medium hover:bg-slate-900 transition-colors">
-                        Teamsoort Toevoegen
+                        Teamsoort toevoegen
                       </button>
                     </form>
                   </div>
@@ -2459,7 +2754,7 @@ export default function EventDetail() {
 
             {settingsSubTab === 'statuses' && (
               <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 md:p-6">
-                <h3 className="text-lg font-semibold mb-4">Statussen Beheren</h3>
+                <h3 className="text-lg font-semibold mb-4">Statussen beheren</h3>
                 <details open className="border border-slate-200 rounded-xl overflow-hidden mb-4">
                   <summary className="cursor-pointer px-4 py-3 bg-slate-50 font-semibold text-slate-800">Bestaande statussen</summary>
                   <div className="p-4 space-y-3">
@@ -2576,7 +2871,7 @@ export default function EventDetail() {
                   <summary className="cursor-pointer px-4 py-3 bg-slate-50 font-semibold text-slate-800">Nieuwe status</summary>
                   <div className="p-4">
                     <form onSubmit={handleAddStatus} className="p-4 bg-slate-100 rounded-xl space-y-4">
-                      <h4 className="text-sm font-bold text-slate-600 uppercase">Nieuwe Status</h4>
+                      <h4 className="text-sm font-bold text-slate-600 uppercase">Nieuwe status</h4>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <input
                           type="text"
@@ -2630,7 +2925,7 @@ export default function EventDetail() {
                         Markeer als 'Bezig' status
                       </label>
                       <button className="w-full bg-slate-800 text-white py-2 rounded-lg text-sm font-medium hover:bg-slate-900 transition-colors">
-                        Status Toevoegen
+                        Status toevoegen
                       </button>
                     </form>
                   </div>
@@ -2649,7 +2944,7 @@ export default function EventDetail() {
             animate={{ scale: 1, opacity: 1 }}
             className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto"
           >
-            <h2 className="text-2xl font-bold mb-6">Nieuwe Interventie</h2>
+            <h2 className="text-2xl font-bold mb-6">Nieuwe interventie</h2>
             <form onSubmit={handleAddIntervention} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Titel</label>
@@ -2696,7 +2991,7 @@ export default function EventDetail() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Ploegen Koppelen</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Ploegen koppelen</label>
                 <div className="grid grid-cols-2 gap-2 max-h-32 overflow-y-auto p-2 border border-slate-100 rounded-lg">
                   {teams.filter(team => Number(team.is_deployed) === 1).map(team => (
                     <label key={team.id} className={`flex items-center gap-2 text-xs ${!canTeamBeAddedToIntervention(team.id, 0) ? 'opacity-50' : ''}`}>
@@ -2721,7 +3016,7 @@ export default function EventDetail() {
               <div className="flex flex-col sm:flex-row gap-3 mt-8">
                 <button 
                   type="button"
-                  onClick={() => setShowNewIntervention(false)}
+                  onClick={cancelNewInterventionModal}
                   className="flex-1 px-4 py-2 border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50"
                 >
                   Annuleren
@@ -2747,7 +3042,7 @@ export default function EventDetail() {
             className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto"
           >
             <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
-              <Megaphone className="text-red-600" /> Event Melding
+              <Megaphone className="text-red-600" /> Eventmelding
             </h2>
             <form onSubmit={handleUpdateEventAnnouncement} className="space-y-4">
               <div>

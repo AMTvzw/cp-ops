@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { useEffect } from 'react';
+import React, { useEffect } from 'react';
 import Dashboard from './components/Dashboard';
 import EventDetail from './components/EventDetail';
 import Login from './components/Login';
