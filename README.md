@@ -158,6 +158,7 @@ docker run --rm -p 31987:31987 \
   -e NODE_ENV=production \
   -e SESSION_SECRET='replace-with-a-long-random-secret-min-32' \
   -e DEFAULT_ROOT_PASSWORD='replace-this-password' \
+  -e PUBLIC_ORIGIN='http://your-host-or-domain:31987' \
   -v cp_ops_data:/app/data \
   -v cp_ops_uploads:/app/uploads \
   cp-ops:latest
@@ -184,6 +185,16 @@ MARIADB_PASSWORD=replace-this-db-password \
 MARIADB_ROOT_PASSWORD=replace-this-root-db-password \
 docker compose --profile mariadb -f deploy/docker/docker-compose.yml up -d --build
 ```
+
+For Docker deployments, keep `NODE_ENV=production`. If the container is exposed over plain HTTP through Proxmox or another proxy, set the browser-facing origin so sessions and CSRF checks line up:
+
+```env
+SESSION_COOKIE_SECURE=auto
+SESSION_COOKIE_SAMESITE=lax
+PUBLIC_ORIGIN=http://your-host-or-domain:31987
+```
+
+If users access the app through multiple hostnames or ports, add them to `ALLOWED_ORIGINS` as a comma-separated list.
 
 Files included:
 - `deploy/docker/Dockerfile`

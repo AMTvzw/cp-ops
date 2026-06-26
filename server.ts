@@ -147,6 +147,46 @@ const collectUiLiteralCandidates = async () => {
   return [...literals].sort((a, b) => a.localeCompare(b));
 };
 
+const parseBooleanEnv = (value: unknown): boolean | null => {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return null;
+};
+
+const parseCsvEnv = (value: unknown): string[] => {
+  if (typeof value !== "string") return [];
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+};
+
+const parseSessionCookieSecure = (value: unknown, isProduction: boolean): boolean | "auto" => {
+  if (typeof value !== "string" || !value.trim()) return isProduction ? "auto" : false;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "auto") return "auto";
+  return parseBooleanEnv(normalized) ?? (isProduction ? "auto" : false);
+};
+
+const parseSessionCookieSameSite = (value: unknown): "lax" | "strict" | "none" => {
+  if (typeof value !== "string" || !value.trim()) return "lax";
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "strict" || normalized === "none") return normalized;
+  return "lax";
+};
+
+const hostFromUrl = (value: string): string | null => {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.host;
+  } catch {
+    return null;
+  }
+};
+
 // Extend express-session to include custom properties
 declare module 'express-session' {
   interface SessionData {
@@ -170,6 +210,17 @@ export async function createApp() {
   const sessionSecret = (configuredSessionSecret && configuredSessionSecret.length >= 32)
     ? configuredSessionSecret
     : (isProduction ? null : "dev-only-insecure-session-secret-change-me-123456");
+  const sessionCookieSecure = parseSessionCookieSecure(process.env.SESSION_COOKIE_SECURE, isProduction);
+  const sessionCookieSameSite = parseSessionCookieSameSite(process.env.SESSION_COOKIE_SAMESITE);
+  const allowedCsrfHosts = new Set(
+    [
+      ...parseCsvEnv(process.env.PUBLIC_ORIGIN),
+      ...parseCsvEnv(process.env.APP_ORIGIN),
+      ...parseCsvEnv(process.env.ALLOWED_ORIGINS),
+    ]
+      .map(hostFromUrl)
+      .filter((entry): entry is string => Boolean(entry)),
+  );
 
   if (!sessionSecret) {
     throw new Error("SESSION_SECRET is required and must be at least 32 characters long");
@@ -209,11 +260,11 @@ export async function createApp() {
     rolling: true,
     name: 'cp_ops_session',
     cookie: { 
-      secure: isProduction,
-      sameSite: isProduction ? 'none' : 'lax',
+      secure: sessionCookieSecure,
+      sameSite: sessionCookieSameSite,
       httpOnly: true,
       maxAge: sessionIdleTimeoutMs
-    }
+    } as any
   }));
 
   app.use((req, res, next) => {
@@ -348,14 +399,23 @@ export async function createApp() {
     const mutating = req.method === "POST" || req.method === "PUT" || req.method === "PATCH" || req.method === "DELETE";
     if (!mutating) return next();
 
-    const host = String(req.get("host") || "");
+    const requestHosts = new Set(allowedCsrfHosts);
+    const host = String(req.get("host") || "").trim();
+    if (host) requestHosts.add(host);
+    const forwardedHost = String(req.get("x-forwarded-host") || "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .at(0);
+    if (forwardedHost) requestHosts.add(forwardedHost);
+
     const origin = req.get("origin");
     const referer = req.get("referer");
 
     const sameHost = (value: string) => {
       try {
         const parsed = new URL(value);
-        return parsed.host === host && (parsed.protocol === "http:" || parsed.protocol === "https:");
+        return requestHosts.has(parsed.host) && (parsed.protocol === "http:" || parsed.protocol === "https:");
       } catch {
         return false;
       }

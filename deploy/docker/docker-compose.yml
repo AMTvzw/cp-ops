@@ -5,24 +5,14 @@ services:
       dockerfile: deploy/docker/Dockerfile
     image: cp-ops:latest
     container_name: cp-ops
+    env_file:
+      - ../../.env
     ports:
       - "31987:31987"
     environment:
       NODE_ENV: production
       PORT: "31987"
-      # Default is local SQLite. To use the optional MariaDB service below,
-      # set DB_CLIENT=mysql2, DB_HOST=mariadb, DB_USER, DB_PASSWORD, DB_NAME
-      # and run with --profile mariadb. See README.md for the full command.
-      DB_CLIENT: ${DB_CLIENT:-sqlite3}
-      DB_FILENAME: ${DB_FILENAME:-/app/data/cp_ops.sqlite}
-      DB_HOST: ${DB_HOST:-}
-      DB_PORT: ${DB_PORT:-3306}
-      DB_USER: ${DB_USER:-}
-      DB_PASSWORD: ${DB_PASSWORD:-}
-      DB_NAME: ${DB_NAME:-}
-      DB_URL: ${DB_URL:-}
-      SESSION_IDLE_TIMEOUT_MINUTES: "60"
-      UPLOAD_STORAGE: ${UPLOAD_STORAGE:-fs}
+      # Database, upload storage, session, public origin and secrets are read from ../../.env.
       # Optional external MariaDB/MySQL:
       # DB_HOST: your-db-host
       # DB_PORT: "3306"
@@ -41,9 +31,6 @@ services:
       # DB_POOL_REAP_INTERVAL_MS: "1000"
       # DB_ACQUIRE_CONNECTION_TIMEOUT_MS: "15000"
       # UPLOAD_STORAGE: "db"
-      SESSION_SECRET: "replace-with-a-long-random-secret-min-32"
-      DEFAULT_ROOT_USERNAME: root
-      DEFAULT_ROOT_PASSWORD: "replace-this-password"
       # Optional shared rate limiting backend:
       # REDIS_URL: redis://redis:6379
     volumes:
