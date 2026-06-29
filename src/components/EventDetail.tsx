@@ -51,6 +51,9 @@ interface Team {
   current_status_name?: string | null;
   current_status_color?: string | null;
   current_status_updated_at?: string | null;
+  current_status_updated_at_ms?: number | null;
+  current_status_duration_seconds?: number | null;
+  current_status_duration_calculated_at?: string | null;
   current_status_is_start?: number | null;
   current_status_is_closed?: number | null;
   current_status_is_busy?: number | null;
@@ -75,7 +78,9 @@ interface TeamInIntervention extends Team {
   status_color: string;
   status_is_closed: number;
   status_started_at?: string | null;
+  status_started_at_ms?: number | null;
   status_duration_seconds?: number | null;
+  status_duration_calculated_at?: string | null;
 }
 
 interface InterventionStatusDuration {
@@ -93,6 +98,10 @@ interface InterventionTeamHistory {
   status_color?: string | null;
   started_at: string;
   ended_at?: string | null;
+  started_at_ms?: number | null;
+  ended_at_ms?: number | null;
+  duration_seconds?: number | null;
+  duration_calculated_at?: string | null;
 }
 
 interface Intervention {
@@ -104,6 +113,7 @@ interface Intervention {
   created_at: string;
   closed_at: string | null;
   open_seconds?: number;
+  open_seconds_calculated_at?: string;
   status_durations?: InterventionStatusDuration[];
   team_history?: InterventionTeamHistory[];
   teams: TeamInIntervention[];
@@ -134,6 +144,7 @@ interface InterventionMessage {
 }
 
 interface InterventionEditState {
+  title: string;
   location: string;
   description: string;
   addTeamStatusId: number;
@@ -233,6 +244,7 @@ export default function EventDetail() {
     contact_info: '',
     description: '',
   });
+  const [eventFormDirty, setEventFormDirty] = useState(false);
   const [savingEventInfo, setSavingEventInfo] = useState(false);
 
   // Form states
@@ -240,6 +252,7 @@ export default function EventDetail() {
   const [newIntervention, setNewIntervention] = useState({ title: '', location: '', description: '', status_id: 0, team_ids: [] as number[] });
   const [showEventAnnouncement, setShowEventAnnouncement] = useState(false);
   const [eventAnnouncement, setEventAnnouncement] = useState({ message: '', bg_color: '#ef4444', is_active: false });
+  const [eventAnnouncementDirty, setEventAnnouncementDirty] = useState(false);
   
   const [showNewTeam, setShowNewTeam] = useState(false);
   const [newTeam, setNewTeam] = useState({ name: '', type: '', aid_post_id: '' });
@@ -271,12 +284,24 @@ export default function EventDetail() {
   const [savingEventAssignments, setSavingEventAssignments] = useState(false);
   const [teamStatusDrafts, setTeamStatusDrafts] = useState<Record<number, string>>({});
   const [statusAidPostDrafts, setStatusAidPostDrafts] = useState<Record<string, string>>({});
+  const [teamStatusSaveState, setTeamStatusSaveState] = useState<Record<number, 'saving' | 'saved' | 'error'>>({});
+  const [interventionTeamStatusSaveState, setInterventionTeamStatusSaveState] = useState<Record<string, 'saving' | 'saved' | 'error'>>({});
 
   const setActiveTab = (nextTab: EventTab) => {
     setActiveTabState(nextTab);
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set('tab', nextTab);
     setSearchParams(nextParams, { replace: true });
+  };
+
+  const updateEventForm = (patch: Partial<EventFormState>) => {
+    setEventFormDirty(true);
+    setEventForm(prev => ({ ...prev, ...patch }));
+  };
+
+  const updateEventAnnouncement = (patch: Partial<typeof eventAnnouncement>) => {
+    setEventAnnouncementDirty(true);
+    setEventAnnouncement(prev => ({ ...prev, ...patch }));
   };
 
   useEffect(() => {
@@ -302,7 +327,7 @@ export default function EventDetail() {
       void fetchData({ background: true });
     }, 15000);
     return () => window.clearInterval(interval);
-  }, [activeTab, id]);
+  }, [activeTab, id, eventFormDirty, eventAnnouncementDirty]);
 
   useEffect(() => {
     fetchLogs(true);
@@ -319,24 +344,38 @@ export default function EventDetail() {
   }, [interventions]);
 
   useEffect(() => {
-    const nameDrafts: Record<number, string> = {};
-    const typeDrafts: Record<number, string> = {};
-    const aidPostDrafts: Record<number, string> = {};
-    const deployDrafts: Record<number, boolean> = {};
-    const statusDrafts: Record<number, string> = {};
-    for (const team of teams) {
-      nameDrafts[team.id] = team.name;
-      typeDrafts[team.id] = team.type;
-      aidPostDrafts[team.id] = team.aid_post_id ? String(team.aid_post_id) : '';
-      deployDrafts[team.id] = Number(team.is_deployed) === 1;
-      statusDrafts[team.id] = team.current_status_id ? String(team.current_status_id) : '';
-    }
-    setTeamNameDrafts(nameDrafts);
-    setTeamTypeDrafts(typeDrafts);
-    setTeamAidPostDrafts(aidPostDrafts);
-    setTeamDeployedDrafts(deployDrafts);
-    setTeamStatusDrafts(statusDrafts);
-  }, [teams]);
+    setTeamNameDrafts(prev => {
+      const next: Record<number, string> = {};
+      for (const team of teams) next[team.id] = editingTeamNameId === team.id ? (prev[team.id] ?? team.name) : team.name;
+      return next;
+    });
+    setTeamTypeDrafts(prev => {
+      const next: Record<number, string> = {};
+      for (const team of teams) next[team.id] = editingTeamNameId === team.id ? (prev[team.id] ?? team.type) : team.type;
+      return next;
+    });
+    setTeamAidPostDrafts(prev => {
+      const next: Record<number, string> = {};
+      for (const team of teams) {
+        const serverValue = team.aid_post_id ? String(team.aid_post_id) : '';
+        next[team.id] = editingTeamNameId === team.id ? (prev[team.id] ?? serverValue) : serverValue;
+      }
+      return next;
+    });
+    setTeamDeployedDrafts(prev => {
+      const next: Record<number, boolean> = {};
+      for (const team of teams) next[team.id] = prev[team.id] ?? (Number(team.is_deployed) === 1);
+      return next;
+    });
+    setTeamStatusDrafts(prev => {
+      const next: Record<number, string> = {};
+      for (const team of teams) {
+        const serverValue = team.current_status_id ? String(team.current_status_id) : '';
+        next[team.id] = teamStatusSaveState[team.id] === 'saving' ? (prev[team.id] ?? serverValue) : serverValue;
+      }
+      return next;
+    });
+  }, [teams, editingTeamNameId, teamStatusSaveState]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -382,15 +421,17 @@ export default function EventDetail() {
 
       if (eventData) {
         setEvent(eventData);
-        setEventForm({
-          name: eventData.name || '',
-          date: eventData.date || '',
-          end_date: eventData.end_date || '',
-          location: eventData.location || '',
-          organizer: eventData.organizer || '',
-          contact_info: eventData.contact_info || '',
-          description: eventData.description || '',
-        });
+        if (!eventFormDirty) {
+          setEventForm({
+            name: eventData.name || '',
+            date: eventData.date || '',
+            end_date: eventData.end_date || '',
+            location: eventData.location || '',
+            organizer: eventData.organizer || '',
+            contact_info: eventData.contact_info || '',
+            description: eventData.description || '',
+          });
+        }
       }
       if (interData) setInterventions(interData);
       if (teamData) setTeams(teamData);
@@ -418,7 +459,12 @@ export default function EventDetail() {
         setStatuses(statusData);
         if (statusData.length > 0) {
           const busy = statusData.find((s) => Number(s.is_busy) === 1);
-          setNewIntervention(prev => ({ ...prev, status_id: busy?.id || statusData[0].id }));
+          setNewIntervention(prev => {
+            if (prev.status_id && statusData.some(s => Number(s.id) === Number(prev.status_id))) {
+              return prev;
+            }
+            return { ...prev, status_id: busy?.id || statusData[0].id };
+          });
         }
       }
 
@@ -429,11 +475,13 @@ export default function EventDetail() {
       }>(`/api/events/${id}/announcement`);
       if (eventAnnouncementResult.response.ok && eventAnnouncementResult.data) {
         const data = eventAnnouncementResult.data;
-        setEventAnnouncement({
-          message: data.message || '',
-          bg_color: data.bg_color || '#ef4444',
-          is_active: !!data.is_active,
-        });
+        if (!eventAnnouncementDirty) {
+          setEventAnnouncement({
+            message: data.message || '',
+            bg_color: data.bg_color || '#ef4444',
+            is_active: !!data.is_active,
+          });
+        }
       }
       if (Array.isArray(logUsersData)) {
         setLogUsers(logUsersData);
@@ -514,6 +562,48 @@ export default function EventDetail() {
     setMessagesByIntervention(prev => ({ ...prev, [interventionId]: messages }));
   };
 
+  const getConfiguredTimezone = () => settings.timezone || 'Europe/Brussels';
+
+  const parseTimestamp = (value: string | Date) => {
+    if (value instanceof Date) return value;
+    const trimmed = String(value || '').trim();
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)) {
+      return new Date(`${trimmed.replace(' ', 'T')}Z`);
+    }
+    return new Date(trimmed);
+  };
+
+  const formatTime = (value: string | Date) =>
+    new Intl.DateTimeFormat(languageCode === 'nl' ? 'nl-BE' : 'en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: getConfiguredTimezone(),
+    }).format(parseTimestamp(value));
+
+  const formatDateTime = (value: string | Date) =>
+    new Intl.DateTimeFormat(languageCode === 'nl' ? 'nl-BE' : 'en-US', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      timeZone: getConfiguredTimezone(),
+    }).format(parseTimestamp(value));
+
+  const formatTimestampWithoutTimezone = (value?: string | Date | null, epochMs?: number | null) => {
+    if (epochMs != null && Number.isFinite(Number(epochMs))) {
+      return format(new Date(Number(epochMs)), 'yyyy-MM-dd HH:mm:ss');
+    }
+    if (!value) return '-';
+    if (value instanceof Date) return value.toISOString().slice(0, 19).replace('T', ' ');
+    return String(value)
+      .trim()
+      .replace('T', ' ')
+      .replace(/Z$/, '')
+      .replace(/\.\d+$/, '');
+  };
+
   const formatDuration = (seconds?: number | null) => {
     if (seconds == null) return '-';
     const total = Math.max(0, Math.floor(seconds));
@@ -530,13 +620,30 @@ export default function EventDetail() {
   const getLiveStatusDuration = (
     statusStartedAt?: string | null,
     fallbackSeconds?: number | null,
-    isClosed?: boolean
+    isClosed?: boolean,
+    calculatedAt?: string | null
   ) => {
     if (isClosed) return fallbackSeconds ?? null;
-    if (statusStartedAt) {
-      return Math.max(0, Math.floor((durationNow - new Date(statusStartedAt).getTime()) / 1000));
+    if (fallbackSeconds != null) {
+      const calculatedAtMs = calculatedAt ? parseTimestamp(calculatedAt).getTime() : durationNow;
+      const elapsedSinceCalculation = Math.max(0, Math.floor((durationNow - calculatedAtMs) / 1000));
+      return fallbackSeconds + elapsedSinceCalculation;
     }
-    return fallbackSeconds ?? null;
+    if (statusStartedAt) {
+      return Math.max(0, Math.floor((durationNow - parseTimestamp(statusStartedAt).getTime()) / 1000));
+    }
+    return null;
+  };
+
+  const getLiveOpenDuration = (intervention: Intervention) => {
+    const baseSeconds = intervention.open_seconds ?? null;
+    if (baseSeconds == null) return null;
+    if (intervention.closed_at) return baseSeconds;
+    const calculatedAt = intervention.open_seconds_calculated_at
+      ? parseTimestamp(intervention.open_seconds_calculated_at).getTime()
+      : durationNow;
+    const elapsedSinceCalculation = Math.max(0, Math.floor((durationNow - calculatedAt) / 1000));
+    return baseSeconds + elapsedSinceCalculation;
   };
 
   const getDefaultInterventionStatusId = () => {
@@ -611,6 +718,7 @@ export default function EventDetail() {
   const beginEditIntervention = (inter: Intervention) => {
     setEditingInterventionId(inter.id);
     setInterventionEdit({
+      title: inter.title || '',
       location: inter.location || '',
       description: inter.description || '',
       addTeamStatusId: getDefaultInterventionStatusId(),
@@ -626,10 +734,15 @@ export default function EventDetail() {
 
   const saveInterventionEdit = async (interventionId: number) => {
     if (!interventionEdit) return;
+    if (!interventionEdit.title.trim()) {
+      alert('Titel is verplicht');
+      return;
+    }
     const res = await fetch(`/api/interventions/${interventionId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        title: interventionEdit.title.trim(),
         location: interventionEdit.location.trim(),
         description: interventionEdit.description.trim(),
         add_team_ids: interventionEdit.addTeamIds,
@@ -651,6 +764,8 @@ export default function EventDetail() {
     if (!hasRole(['ROOT', 'ADMIN', 'OPERATOR'])) return;
     const statusKey = getTeamStatusEditorKey(interId, teamId);
     const destinationAidPostId = statusAidPostDrafts[statusKey];
+    const previousInterventions = interventions;
+    setInterventionTeamStatusSaveState(prev => ({ ...prev, [statusKey]: 'saving' }));
     const res = await fetch(`/api/interventions/${interId}/teams/${teamId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -661,13 +776,16 @@ export default function EventDetail() {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => null);
+      setInterventions(previousInterventions);
+      setInterventionTeamStatusSaveState(prev => ({ ...prev, [statusKey]: 'error' }));
       alert(data?.error || 'Status wijzigen mislukt');
       return;
     }
 
     const selectedStatus = statuses.find(s => Number(s.id) === Number(statusId));
     if (selectedStatus) {
-      const nowIso = new Date().toISOString();
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
       setInterventions(prev =>
         prev.map(inter => {
           if (Number(inter.id) !== Number(interId)) return inter;
@@ -681,7 +799,9 @@ export default function EventDetail() {
               status_color: selectedStatus.color,
               status_is_closed: selectedStatus.is_closed,
               status_started_at: nowIso,
+              status_started_at_ms: nowMs,
               status_duration_seconds: 0,
+              status_duration_calculated_at: nowIso,
             };
           });
 
@@ -697,7 +817,15 @@ export default function EventDetail() {
       );
     }
 
-    setExpandedTeamStatusKey(null);
+    setInterventionTeamStatusSaveState(prev => ({ ...prev, [statusKey]: 'saved' }));
+    window.setTimeout(() => {
+      setInterventionTeamStatusSaveState(prev => {
+        if (prev[statusKey] !== 'saved') return prev;
+        const next = { ...prev };
+        delete next[statusKey];
+        return next;
+      });
+    }, 1800);
     setStatusAidPostDrafts(prev => ({ ...prev, [statusKey]: '' }));
     void fetchData({ background: true });
   };
@@ -725,6 +853,7 @@ export default function EventDetail() {
 
   const handleUpdateStandaloneTeamStatus = async (teamId: number, statusId: number) => {
     if (!hasRole(['ROOT', 'ADMIN', 'OPERATOR'])) return;
+    setTeamStatusSaveState(prev => ({ ...prev, [teamId]: 'saving' }));
     const res = await fetch(`/api/teams/${teamId}/status`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -732,10 +861,20 @@ export default function EventDetail() {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => null);
+      setTeamStatusSaveState(prev => ({ ...prev, [teamId]: 'error' }));
       alert(data?.error || 'Ploegstatus wijzigen mislukt');
       return;
     }
     setTeamStatusDrafts(prev => ({ ...prev, [teamId]: String(statusId) }));
+    setTeamStatusSaveState(prev => ({ ...prev, [teamId]: 'saved' }));
+    window.setTimeout(() => {
+      setTeamStatusSaveState(prev => {
+        if (prev[teamId] !== 'saved') return prev;
+        const next = { ...prev };
+        delete next[teamId];
+        return next;
+      });
+    }, 1800);
     void fetchData({ background: true });
     fetchLogs(true);
   };
@@ -1296,6 +1435,7 @@ export default function EventDetail() {
         contact_info: eventForm.contact_info || undefined,
         description: eventForm.description,
       } : prev);
+      setEventFormDirty(false);
       fetchLogs(true);
     } finally {
       setSavingEventInfo(false);
@@ -1314,6 +1454,7 @@ export default function EventDetail() {
       alert(data?.error || 'Event melding opslaan mislukt');
       return;
     }
+    setEventAnnouncementDirty(false);
     setShowEventAnnouncement(false);
     void fetchData({ background: true });
   };
@@ -1471,7 +1612,7 @@ export default function EventDetail() {
                         <input
                           type="text"
                           value={eventForm.name}
-                          onChange={(e) => setEventForm(prev => ({ ...prev, name: e.target.value }))}
+                          onChange={(e) => updateEventForm({ name: e.target.value })}
                           className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
                           placeholder="Naam evenement"
                         />
@@ -1481,7 +1622,7 @@ export default function EventDetail() {
                         <input
                           type="date"
                           value={eventForm.date}
-                          onChange={(e) => setEventForm(prev => ({ ...prev, date: e.target.value }))}
+                          onChange={(e) => updateEventForm({ date: e.target.value })}
                           className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
                         />
                       </div>
@@ -1490,7 +1631,7 @@ export default function EventDetail() {
                         <input
                           type="date"
                           value={eventForm.end_date}
-                          onChange={(e) => setEventForm(prev => ({ ...prev, end_date: e.target.value }))}
+                          onChange={(e) => updateEventForm({ end_date: e.target.value })}
                           className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
                         />
                       </div>
@@ -1499,7 +1640,7 @@ export default function EventDetail() {
                         <input
                           type="text"
                           value={eventForm.location}
-                          onChange={(e) => setEventForm(prev => ({ ...prev, location: e.target.value }))}
+                          onChange={(e) => updateEventForm({ location: e.target.value })}
                           className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
                           placeholder="Locatie"
                         />
@@ -1509,7 +1650,7 @@ export default function EventDetail() {
                         <input
                           type="text"
                           value={eventForm.organizer}
-                          onChange={(e) => setEventForm(prev => ({ ...prev, organizer: e.target.value }))}
+                          onChange={(e) => updateEventForm({ organizer: e.target.value })}
                           className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
                           placeholder="Organisator"
                         />
@@ -1519,7 +1660,7 @@ export default function EventDetail() {
                         <input
                           type="text"
                           value={eventForm.contact_info}
-                          onChange={(e) => setEventForm(prev => ({ ...prev, contact_info: e.target.value }))}
+                          onChange={(e) => updateEventForm({ contact_info: e.target.value })}
                           className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
                           placeholder="Contactinformatie"
                         />
@@ -1528,7 +1669,7 @@ export default function EventDetail() {
                         <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1">Omschrijving</label>
                         <textarea
                           value={eventForm.description}
-                          onChange={(e) => setEventForm(prev => ({ ...prev, description: e.target.value }))}
+                          onChange={(e) => updateEventForm({ description: e.target.value })}
                           className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm min-h-[96px]"
                           placeholder="Omschrijving van dit evenement"
                         />
@@ -1651,16 +1792,35 @@ export default function EventDetail() {
                         <div className="flex items-center gap-2">
                           <MapPin className="w-4 h-4" /> {inter.location || 'Geen locatie'}
                         </div>
+                        {(inter.description || '').trim() && (
+                          <div className="flex items-start gap-2">
+                            <FileText className="w-4 h-4 mt-0.5" />
+                            <span className="whitespace-pre-wrap break-words">{inter.description}</span>
+                          </div>
+                        )}
                         <div className="flex items-center gap-2">
-                          <Clock className="w-4 h-4" /> {format(new Date(inter.created_at), 'HH:mm')}
+                          <Clock className="w-4 h-4" /> {formatTime(inter.created_at)}
                         </div>
                         <div className="flex items-center gap-2">
-                          <Clock className="w-4 h-4" /> Open duur: {formatDuration(inter.open_seconds)}
+                          <Clock className="w-4 h-4" /> Open duur: {formatDuration(getLiveOpenDuration(inter))}
                         </div>
                       </div>
 
                       {editingInterventionId === inter.id && interventionEdit && (
                         <div className="mb-4 p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
+                          <div>
+                            <label className="block text-xs font-semibold text-slate-600 mb-1">Titel</label>
+                            <input
+                              type="text"
+                              required
+                              value={interventionEdit.title}
+                              onChange={(e) =>
+                                setInterventionEdit(prev => prev ? { ...prev, title: e.target.value } : prev)
+                              }
+                              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
+                              placeholder="Titel interventie"
+                            />
+                          </div>
                           <div>
                             <label className="block text-xs font-semibold text-slate-600 mb-1">Locatie</label>
                             <input
@@ -1829,6 +1989,8 @@ export default function EventDetail() {
                           return visibleTeams.map(team => {
                             const statusKey = getTeamStatusEditorKey(inter.id, team.id);
                             const isExpanded = expandedTeamStatusKey === statusKey;
+                            const teamTimeline = (inter.team_history || [])
+                              .filter(entry => Number(entry.team_id) === Number(team.id));
 
                             return (
                               <div key={team.id} className="pt-3 border-t border-slate-100">
@@ -1848,16 +2010,60 @@ export default function EventDetail() {
                                   </div>
                                 </button>
                                 {!inter.closed_at && (
-                                  <div className="text-[11px] text-slate-500 mb-2">
-                                    Op huidige status: {formatDuration(
-                                      getLiveStatusDuration(
-                                        team.status_started_at,
-                                        team.status_duration_seconds,
-                                        Boolean(inter.closed_at)
-                                      )
-                                    )}
+                                  <div className="text-[11px] text-slate-500 mb-2 space-y-0.5">
+                                    <div>Start status: {formatTimestampWithoutTimezone(team.status_started_at, team.status_started_at_ms)}</div>
+                                    <div>
+                                      Duur huidige status: {formatDuration(
+                                        getLiveStatusDuration(
+                                          team.status_started_at,
+                                          team.status_duration_seconds,
+                                          Boolean(inter.closed_at),
+                                          team.status_duration_calculated_at
+                                        )
+                                      )}
+                                    </div>
                                   </div>
                                 )}
+                                <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 p-2">
+                                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">
+                                    Tijdlijn
+                                  </p>
+                                  <div className="space-y-2 max-h-40 overflow-y-auto">
+                                    {teamTimeline.map(entry => {
+                                      const seconds = entry.duration_seconds != null
+                                        ? getLiveStatusDuration(
+                                            entry.started_at,
+                                            entry.duration_seconds,
+                                            Boolean(entry.ended_at),
+                                            entry.duration_calculated_at
+                                          )
+                                        : getLiveStatusDuration(entry.started_at, null, Boolean(entry.ended_at));
+                                      return (
+                                        <div key={entry.id} className="text-xs text-slate-700 rounded bg-white border border-slate-100 p-2">
+                                          <div className="flex flex-wrap items-center gap-2 mb-1">
+                                            <span
+                                              className="px-2 py-0.5 rounded text-[10px] font-bold text-white uppercase"
+                                              style={{ backgroundColor: entry.status_color || '#64748b' }}
+                                            >
+                                              {entry.status_name || 'Geen status'}
+                                            </span>
+                                            <span className="text-[10px] text-slate-400">
+                                              {formatDuration(seconds)}
+                                            </span>
+                                          </div>
+                                          <div className="text-[11px] text-slate-500">
+                                            {formatTimestampWithoutTimezone(entry.started_at, entry.started_at_ms)}
+                                            {' tot '}
+                                            {entry.ended_at ? formatTimestampWithoutTimezone(entry.ended_at, entry.ended_at_ms) : 'heden'}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                    {teamTimeline.length === 0 && (
+                                      <div className="text-xs text-slate-400 italic">Nog geen statusgeschiedenis.</div>
+                                    )}
+                                  </div>
+                                </div>
                                 {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && !inter.closed_at && (
                                   <>
                                     {!isExpanded && (
@@ -1871,6 +2077,48 @@ export default function EventDetail() {
                                     )}
                                     {isExpanded && (
                                       <div className="space-y-2">
+                                        <div>
+                                          <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                                            Nieuwe status
+                                          </label>
+                                          <select
+                                            value={team.status_id || ''}
+                                            disabled={interventionTeamStatusSaveState[statusKey] === 'saving'}
+                                            onChange={(e) => {
+                                              const nextStatusId = Number(e.target.value);
+                                              if (nextStatusId && nextStatusId !== Number(team.status_id)) {
+                                                void handleUpdateTeamStatus(inter.id, team.id, nextStatusId);
+                                              }
+                                            }}
+                                            className="w-full px-2 py-1.5 rounded border border-slate-200 text-xs bg-white"
+                                          >
+                                            {statuses.map(s => (
+                                              <option key={s.id} value={s.id}>
+                                                {s.name}
+                                                {s.is_start ? ' (ontkoppelt)' : s.is_closed ? ' (sluitend)' : ''}
+                                              </option>
+                                            ))}
+                                          </select>
+                                          {interventionTeamStatusSaveState[statusKey] === 'saving' && (
+                                            <p className="mt-1 text-xs text-slate-500">Status opslaan...</p>
+                                          )}
+                                          {interventionTeamStatusSaveState[statusKey] === 'saved' && (
+                                            <p className="mt-1 text-xs text-emerald-600">Status opgeslagen</p>
+                                          )}
+                                          {interventionTeamStatusSaveState[statusKey] === 'error' && (
+                                            <p className="mt-1 text-xs text-red-600">Status opslaan mislukt</p>
+                                          )}
+                                          <button
+                                            type="button"
+                                            disabled={interventionTeamStatusSaveState[statusKey] === 'saving' || !team.status_id}
+                                            onClick={() => {
+                                              if (team.status_id) void handleUpdateTeamStatus(inter.id, team.id, Number(team.status_id));
+                                            }}
+                                            className="mt-2 w-full px-2 py-1.5 rounded border border-slate-200 text-xs text-slate-600 hover:bg-white disabled:opacity-50"
+                                          >
+                                            Herstart huidige status
+                                          </button>
+                                        </div>
                                         <div>
                                           <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
                                             Bestemmingshulppost bij afvoer
@@ -1887,22 +2135,6 @@ export default function EventDetail() {
                                               <option key={post.id} value={post.id}>{post.name}</option>
                                             ))}
                                           </select>
-                                        </div>
-                                        <div className="flex flex-wrap gap-1">
-                                          {statuses.map(s => (
-                                            <button
-                                              key={s.id}
-                                              onClick={() => handleUpdateTeamStatus(inter.id, team.id, s.id)}
-                                              className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition-all ${
-                                                team.status_id === s.id
-                                                  ? 'ring-2 ring-offset-1 ring-slate-300 opacity-100'
-                                                  : 'opacity-40 hover:opacity-80'
-                                              }`}
-                                              style={{ backgroundColor: s.color, color: '#fff' }}
-                                            >
-                                              {s.name}
-                                            </button>
-                                          ))}
                                         </div>
                                         <div className="flex flex-wrap gap-2">
                                           <button
@@ -1972,9 +2204,9 @@ export default function EventDetail() {
                                   </span>
                                 </div>
                                 <div className="mt-1">
-                                  {format(new Date(entry.started_at), 'dd-MM-yyyy HH:mm:ss')}
+                                  {formatDateTime(entry.started_at)}
                                   {' tot '}
-                                  {entry.ended_at ? format(new Date(entry.ended_at), 'dd-MM-yyyy HH:mm:ss') : 'heden'}
+                                  {entry.ended_at ? formatDateTime(entry.ended_at) : 'heden'}
                                 </div>
                               </div>
                             ))}
@@ -2011,7 +2243,7 @@ export default function EventDetail() {
                             <div key={msg.id} className="p-2 rounded-lg bg-slate-50 border border-slate-100">
                               <div className="flex justify-between text-[11px] text-slate-500 mb-1">
                                 <span>{msg.actor_username || 'Systeem'}</span>
-                                <span>{format(new Date(msg.created_at), 'dd-MM-yyyy HH:mm:ss')}</span>
+                                <span>{formatDateTime(msg.created_at)}</span>
                               </div>
                               <div className="text-sm text-slate-700">{msg.message}</div>
                             </div>
@@ -2325,17 +2557,31 @@ export default function EventDetail() {
                             </span>
                           </div>
                           {team.current_status_updated_at && (
-                            <div className="text-xs text-slate-500 mb-2">
-                              Sinds: {formatDuration(
-                                getLiveStatusDuration(team.current_status_updated_at, null, false)
-                              )}
+                            <div className="text-xs text-slate-500 mb-2 space-y-0.5">
+                              <div>Start status: {formatTimestampWithoutTimezone(team.current_status_updated_at, team.current_status_updated_at_ms)}</div>
+                              <div>
+                                Duur huidige status: {formatDuration(
+                                  getLiveStatusDuration(
+                                    team.current_status_updated_at,
+                                    team.current_status_duration_seconds,
+                                    false,
+                                    team.current_status_duration_calculated_at
+                                  )
+                                )}
+                              </div>
                             </div>
                           )}
                           {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && (
-                            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_auto] gap-2 min-w-0">
+                            <div className="space-y-2 min-w-0">
                               <select
                                 value={teamStatusDrafts[team.id] || ''}
-                                onChange={(e) => setTeamStatusDrafts(prev => ({ ...prev, [team.id]: e.target.value }))}
+                                onChange={(e) => {
+                                  const nextValue = e.target.value;
+                                  setTeamStatusDrafts(prev => ({ ...prev, [team.id]: nextValue }));
+                                  const nextStatusId = Number(nextValue);
+                                  if (nextStatusId) void handleUpdateStandaloneTeamStatus(team.id, nextStatusId);
+                                }}
+                                disabled={teamStatusSaveState[team.id] === 'saving'}
                                 className="w-full min-w-0 px-3 py-2 rounded-lg border border-slate-200 text-sm"
                               >
                                 <option value="">Kies status...</option>
@@ -2346,17 +2592,15 @@ export default function EventDetail() {
                                   </option>
                                 ))}
                               </select>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const nextStatusId = Number(teamStatusDrafts[team.id]);
-                                  if (nextStatusId) void handleUpdateStandaloneTeamStatus(team.id, nextStatusId);
-                                }}
-                                className="w-full lg:w-auto px-3 py-2 rounded-lg text-white text-sm whitespace-nowrap"
-                                style={{ backgroundColor: settings.primary_color }}
-                              >
-                                Opslaan
-                              </button>
+                              {teamStatusSaveState[team.id] === 'saving' && (
+                                <p className="text-xs text-slate-500">Opslaan...</p>
+                              )}
+                              {teamStatusSaveState[team.id] === 'saved' && (
+                                <p className="text-xs text-emerald-600">Status opgeslagen</p>
+                              )}
+                              {teamStatusSaveState[team.id] === 'error' && (
+                                <p className="text-xs text-red-600">Status opslaan mislukt</p>
+                              )}
                             </div>
                           )}
                         </div>
@@ -2380,14 +2624,18 @@ export default function EventDetail() {
                             <div className="text-xs text-slate-500 mt-1">
                               Omschrijving: {intervention.description || '-'}
                             </div>
-                            <div className="text-xs text-slate-500 mt-1">
-                              Op status sinds: {formatDuration(
-                                getLiveStatusDuration(
-                                  assignment.status_started_at,
-                                  assignment.status_duration_seconds,
-                                  Boolean(intervention.closed_at)
-                                )
-                              )}
+                            <div className="text-xs text-slate-500 mt-1 space-y-0.5">
+                              <div>Start status: {formatTimestampWithoutTimezone(assignment.status_started_at, assignment.status_started_at_ms)}</div>
+                              <div>
+                                Duur huidige status: {formatDuration(
+                                  getLiveStatusDuration(
+                                    assignment.status_started_at,
+                                    assignment.status_duration_seconds,
+                                    Boolean(intervention.closed_at),
+                                    assignment.status_duration_calculated_at
+                                  )
+                                )}
+                              </div>
                             </div>
                           </div>
                         ))}
@@ -2494,7 +2742,7 @@ export default function EventDetail() {
                   <div key={log.id} className="p-4 bg-white rounded-xl border border-slate-100 shadow-sm">
                     <div className="flex flex-wrap items-center gap-2 mb-2 text-xs">
                       <span className="font-mono text-slate-400">
-                        {format(new Date(log.created_at), 'dd-MM-yyyy HH:mm:ss')}
+                        {formatDateTime(log.created_at)}
                       </span>
                       <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">
                         {log.actor_username || 'Systeem'}
@@ -3050,7 +3298,7 @@ export default function EventDetail() {
                 <textarea
                   required
                   value={eventAnnouncement.message}
-                  onChange={e => setEventAnnouncement(prev => ({ ...prev, message: e.target.value }))}
+                  onChange={e => updateEventAnnouncement({ message: e.target.value })}
                   className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-red-500 outline-none transition-all h-28"
                   placeholder="Typ hier de event melding..."
                 />
@@ -3062,7 +3310,7 @@ export default function EventDetail() {
                     <button
                       key={color}
                       type="button"
-                      onClick={() => setEventAnnouncement(prev => ({ ...prev, bg_color: color }))}
+                      onClick={() => updateEventAnnouncement({ bg_color: color })}
                       className={`w-10 h-10 rounded-full border-2 ${eventAnnouncement.bg_color === color ? 'border-slate-900 ring-2 ring-slate-200' : 'border-transparent'}`}
                       style={{ backgroundColor: color }}
                     />
@@ -3070,7 +3318,7 @@ export default function EventDetail() {
                   <input
                     type="color"
                     value={eventAnnouncement.bg_color}
-                    onChange={e => setEventAnnouncement(prev => ({ ...prev, bg_color: e.target.value }))}
+                    onChange={e => updateEventAnnouncement({ bg_color: e.target.value })}
                     className="w-10 h-10 rounded-full border-none p-0 overflow-hidden cursor-pointer"
                   />
                 </div>
@@ -3079,7 +3327,7 @@ export default function EventDetail() {
                 <input
                   type="checkbox"
                   checked={eventAnnouncement.is_active}
-                  onChange={e => setEventAnnouncement(prev => ({ ...prev, is_active: e.target.checked }))}
+                  onChange={e => updateEventAnnouncement({ is_active: e.target.checked })}
                   className="w-4 h-4 rounded border-slate-300 text-red-600 focus:ring-red-500"
                 />
                 Toon eventbanner aan iedereen in dit evenement

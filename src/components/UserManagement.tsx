@@ -63,6 +63,7 @@ export default function UserManagement() {
     border_color: settings.border_color,
     danger_color: settings.danger_color,
     danger_hover_color: settings.danger_hover_color,
+    timezone: settings.timezone,
   });
 
   useEffect(() => {
@@ -84,6 +85,7 @@ export default function UserManagement() {
       border_color: settings.border_color,
       danger_color: settings.danger_color,
       danger_hover_color: settings.danger_hover_color,
+      timezone: settings.timezone,
     });
   }, [settings]);
 
@@ -565,6 +567,20 @@ export default function UserManagement() {
                   {logoUploadError && (
                     <p className="mt-2 text-xs text-red-600">{logoUploadError}</p>
                   )}
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Tijdzone</label>
+                  <select
+                    value={branding.timezone}
+                    onChange={e => setBranding(prev => ({ ...prev, timezone: e.target.value }))}
+                    className="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                  >
+                    <option value="Europe/Brussels">Europe/Brussels</option>
+                    <option value="UTC">UTC</option>
+                    <option value="Europe/Amsterdam">Europe/Amsterdam</option>
+                    <option value="Europe/Paris">Europe/Paris</option>
+                    <option value="Europe/London">Europe/London</option>
+                  </select>
                 </div>
               </div>
             </details>

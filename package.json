@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
+    "test": "node --test --import tsx tests/*.test.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

@@ -41,6 +41,25 @@ const normalizeDateKey = (value: unknown): string | null => {
   return trimmed;
 };
 
+const timestampMs = (value: unknown): number => {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value !== "string") return new Date(String(value || "")).getTime();
+  const trimmed = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)) {
+    return new Date(`${trimmed.replace(" ", "T")}Z`).getTime();
+  }
+  return new Date(trimmed).getTime();
+};
+
+const durationSecondsFromEpoch = (fromMs: number | null, toMs: number, maxSeconds?: number | null) => {
+  if (!fromMs || !Number.isFinite(fromMs)) return null;
+  const seconds = Math.max(0, Math.floor((toMs - fromMs) / 1000));
+  if (maxSeconds != null && Number.isFinite(maxSeconds) && seconds > maxSeconds + 5) {
+    return 0;
+  }
+  return seconds;
+};
+
 const addDaysToDateKey = (dateKey: string, days: number): string => {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey);
   if (!match) return dateKey;
@@ -465,6 +484,18 @@ export async function createApp() {
     return normalized;
   };
 
+  const normalizeTimezone = (value: unknown): string | null => {
+    if (typeof value !== "string") return null;
+    const normalized = value.trim();
+    if (!normalized || normalized.length > 64) return null;
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: normalized }).format(new Date());
+      return normalized;
+    } catch {
+      return null;
+    }
+  };
+
   const hasEventAccess = async (req: any, eventId: number | string) => {
     if (!req.session?.userId) return false;
     if (isPrivileged(req)) return true;
@@ -540,6 +571,7 @@ export async function createApp() {
 
     const allClosed = allTeams.length > 0 && allTeams.every((t: any) => Number(t.is_closed) === 1);
     const nowIso = new Date().toISOString();
+    const nowMs = Date.now();
 
     if (allTeams.length === 0 && !intervention.closed_at) {
       await trx("interventions")
@@ -549,7 +581,7 @@ export async function createApp() {
       await trx("intervention_status_history")
         .where({ intervention_id: interventionId })
         .whereNull("ended_at")
-        .update({ ended_at: nowIso });
+        .update({ ended_at: nowIso, ended_at_ms: nowMs });
       return "closed_no_active_teams";
     }
 
@@ -563,7 +595,7 @@ export async function createApp() {
       await trx("intervention_status_history")
         .where({ intervention_id: interventionId })
         .whereNull("ended_at")
-        .update({ ended_at: nowIso });
+        .update({ ended_at: nowIso, ended_at_ms: nowMs });
       return "closed_all_teams";
     }
 
@@ -589,7 +621,9 @@ export async function createApp() {
           team_id: r.team_id,
           status_id: r.status_id || null,
           started_at: nowIso,
+          started_at_ms: nowMs,
           ended_at: null,
+          ended_at_ms: null,
         }));
 
       if (missingRows.length > 0) {
@@ -608,6 +642,7 @@ export async function createApp() {
     statusId: number | string | null,
   ) => {
     const nowIso = new Date().toISOString();
+    const nowMs = Date.now();
     const existing = await executor("team_current_statuses")
       .where({ team_id: teamId })
       .first();
@@ -619,6 +654,7 @@ export async function createApp() {
           event_id: eventId,
           status_id: statusId || null,
           updated_at: nowIso,
+          updated_at_ms: nowMs,
         });
       return;
     }
@@ -628,6 +664,7 @@ export async function createApp() {
       event_id: eventId,
       status_id: statusId || null,
       updated_at: nowIso,
+      updated_at_ms: nowMs,
     });
   };
 
@@ -1900,6 +1937,7 @@ export async function createApp() {
   // Teams
   app.get("/api/events/:id/teams", requireAuth, async (req, res) => {
     if (!await ensureEventAccess(req, res, req.params.id)) return;
+    const now = Date.now();
     const viewerAidPostId = await getViewerAidPostIdForEvent(req, req.params.id);
     const teamsQuery = db("teams as t")
       .leftJoin("aid_posts as ap", "t.aid_post_id", "ap.id")
@@ -1911,6 +1949,7 @@ export async function createApp() {
         "ap.name as aid_post_name",
         "tcs.status_id as current_status_id",
         "tcs.updated_at as current_status_updated_at",
+        "tcs.updated_at_ms as current_status_updated_at_ms",
         "cs.name as current_status_name",
         "cs.color as current_status_color",
         "cs.is_start as current_status_is_start",
@@ -1927,7 +1966,15 @@ export async function createApp() {
     const teams = await teamsQuery;
     const teamsWithMembers = await Promise.all(teams.map(async team => {
       const members = await db("team_members").where({ team_id: team.id });
-      return { ...team, members };
+      const currentStatusDurationSeconds = team.current_status_updated_at
+        ? Math.max(0, Math.floor((now - (Number(team.current_status_updated_at_ms) || timestampMs(team.current_status_updated_at))) / 1000))
+        : null;
+      return {
+        ...team,
+        current_status_duration_seconds: currentStatusDurationSeconds,
+        current_status_duration_calculated_at: new Date(now).toISOString(),
+        members,
+      };
     }));
     res.json(teamsWithMembers);
   });
@@ -2120,11 +2167,15 @@ export async function createApp() {
       .orderBy("created_at", "asc");
     
     const interventionsWithTeams = await Promise.all(interventions.map(async inter => {
+      const openedAt = timestampMs(inter.created_at);
+      const closedAt = inter.closed_at ? timestampMs(inter.closed_at) : now;
+      const open_seconds = Math.max(0, Math.floor((closedAt - openedAt) / 1000));
+
       const activeHistory = await db("intervention_status_history")
         .where({ intervention_id: inter.id })
         .whereNull("ended_at")
-        .select("team_id", "started_at");
-      const activeByTeam = new Map(activeHistory.map(h => [Number(h.team_id), h.started_at]));
+        .select("team_id", "started_at", "started_at_ms");
+      const activeByTeam = new Map(activeHistory.map(h => [Number(h.team_id), h]));
 
       const teamsQuery = db("teams as t")
         .join("intervention_teams as it", "t.id", "it.team_id")
@@ -2141,27 +2192,29 @@ export async function createApp() {
       const teams = await teamsQuery;
 
       const teamsWithDuration = teams.map(team => {
-        const statusStartedAt = activeByTeam.get(Number(team.id)) || null;
-        const statusDurationSeconds = statusStartedAt
-          ? Math.max(0, Math.floor((now - new Date(statusStartedAt).getTime()) / 1000))
-          : null;
+        const activeStatus = activeByTeam.get(Number(team.id)) || null;
+        const statusStartedAt = activeStatus?.started_at || null;
+        const statusStartedAtMs = activeStatus ? (Number(activeStatus.started_at_ms) || timestampMs(activeStatus.started_at)) : null;
+        const statusDurationSeconds = durationSecondsFromEpoch(statusStartedAtMs, now, open_seconds);
         return {
           ...team,
           status_started_at: statusStartedAt,
+          status_started_at_ms: statusStartedAtMs,
           status_duration_seconds: statusDurationSeconds,
+          status_duration_calculated_at: new Date(now).toISOString(),
         };
       });
 
       const history = await db("intervention_status_history as h")
         .leftJoin("statuses as s", "h.status_id", "s.id")
         .where("h.intervention_id", inter.id)
-        .select("h.status_id", "s.name as status_name", "h.started_at", "h.ended_at");
+        .select("h.status_id", "s.name as status_name", "h.started_at", "h.ended_at", "h.started_at_ms", "h.ended_at_ms");
 
       const durationByStatus = new Map<string, number>();
       for (const row of history) {
-        const from = new Date(row.started_at).getTime();
-        const to = row.ended_at ? new Date(row.ended_at).getTime() : now;
-        const seconds = Math.max(0, Math.floor((to - from) / 1000));
+        const from = Number(row.started_at_ms) || timestampMs(row.started_at);
+        const to = row.ended_at ? (Number(row.ended_at_ms) || timestampMs(row.ended_at)) : now;
+        const seconds = durationSecondsFromEpoch(from, to) ?? 0;
         const key = row.status_name || `Status ${row.status_id ?? "Onbekend"}`;
         durationByStatus.set(key, (durationByStatus.get(key) || 0) + seconds);
       }
@@ -2185,6 +2238,8 @@ export async function createApp() {
           "s.color as status_color",
           "h.started_at",
           "h.ended_at",
+          "h.started_at_ms",
+          "h.ended_at_ms",
         )
         .orderBy("h.started_at", "asc")
         .orderBy("h.id", "asc");
@@ -2195,13 +2250,17 @@ export async function createApp() {
           historyQuery.whereRaw("1 = 0");
         }
       }
-      const team_history = await historyQuery;
+      const team_history = (await historyQuery).map((entry: any) => {
+        const from = Number(entry.started_at_ms) || timestampMs(entry.started_at);
+        const to = entry.ended_at ? (Number(entry.ended_at_ms) || timestampMs(entry.ended_at)) : now;
+        return {
+          ...entry,
+          duration_seconds: durationSecondsFromEpoch(from, to, entry.ended_at ? null : open_seconds) ?? 0,
+          duration_calculated_at: new Date(now).toISOString(),
+        };
+      });
 
-      const openedAt = new Date(inter.created_at).getTime();
-      const closedAt = inter.closed_at ? new Date(inter.closed_at).getTime() : now;
-      const open_seconds = Math.max(0, Math.floor((closedAt - openedAt) / 1000));
-
-      return { ...inter, open_seconds, status_durations, team_history, teams: teamsWithDuration };
+      return { ...inter, open_seconds, open_seconds_calculated_at: new Date(now).toISOString(), status_durations, team_history, teams: teamsWithDuration };
     }));
     
     res.json(interventionsWithTeams);
@@ -2263,6 +2322,8 @@ export async function createApp() {
         });
         
         if (validTeamIds.length > 0) {
+          const nowMs = Date.now();
+          const nowIso = new Date(nowMs).toISOString();
           await trx("intervention_teams").insert(
             validTeamIds.map((teamId: number) => ({ 
               intervention_id: id, 
@@ -2276,8 +2337,10 @@ export async function createApp() {
               intervention_id: id,
               team_id: teamId,
               status_id: resolvedStatusId || null,
-              started_at: new Date().toISOString(),
+              started_at: nowIso,
+              started_at_ms: nowMs,
               ended_at: null,
+              ended_at_ms: null,
             }))
           );
 
@@ -2313,7 +2376,7 @@ export async function createApp() {
   });
 
   app.patch("/api/interventions/:id", requireRole(["ROOT", "ADMIN", "OPERATOR"]), async (req: any, res) => {
-    const { location, description, add_team_ids, remove_team_ids, default_status_id } = req.body || {};
+    const { title, location, description, add_team_ids, remove_team_ids, default_status_id } = req.body || {};
     try {
       const intervention = await db("interventions").where({ id: req.params.id }).first();
       if (!intervention) return res.status(404).json({ error: "Interventie niet gevonden" });
@@ -2323,6 +2386,25 @@ export async function createApp() {
       const removeTeamIds = toPositiveIntArray(remove_team_ids);
 
       await db.transaction(async trx => {
+        if (typeof title === "string") {
+          const normalizedTitle = title.trim();
+          if (!normalizedTitle) {
+            throw new Error("EMPTY_INTERVENTION_TITLE");
+          }
+          if (normalizedTitle !== intervention.title) {
+            await trx("interventions")
+              .where({ id: intervention.id })
+              .update({ title: normalizedTitle });
+
+            await writeActionLog(trx, req, {
+              event_id: intervention.event_id,
+              intervention_id: intervention.id,
+              message: `Titel van interventie gewijzigd van "${intervention.title}" naar "${normalizedTitle}"`,
+            });
+            intervention.title = normalizedTitle;
+          }
+        }
+
         if (typeof location === "string" && location !== intervention.location) {
           await trx("interventions")
             .where({ id: intervention.id })
@@ -2364,11 +2446,12 @@ export async function createApp() {
               .whereIn("team_id", ids)
               .del();
 
+            const nowMs = Date.now();
             await trx("intervention_status_history")
               .where({ intervention_id: intervention.id })
               .whereIn("team_id", ids)
               .whereNull("ended_at")
-              .update({ ended_at: new Date().toISOString() });
+              .update({ ended_at: new Date(nowMs).toISOString(), ended_at_ms: nowMs });
 
             for (const t of linkedToRemove) {
               await setTeamCurrentStatus(trx, intervention.event_id, t.team_id, startStatusId);
@@ -2417,6 +2500,8 @@ export async function createApp() {
           );
 
           if (teamsToAdd.length > 0) {
+            const nowMs = Date.now();
+            const nowIso = new Date(nowMs).toISOString();
             const blockedTeams = await getBlockedTeamsForInterventionAdd(
               trx,
               intervention.event_id,
@@ -2443,8 +2528,10 @@ export async function createApp() {
                 intervention_id: intervention.id,
                 team_id: t.id,
                 status_id: targetStatusId,
-                started_at: new Date().toISOString(),
+                started_at: nowIso,
+                started_at_ms: nowMs,
                 ended_at: null,
+                ended_at_ms: null,
               }))
             );
 
@@ -2472,6 +2559,9 @@ export async function createApp() {
 
       res.json({ success: true });
     } catch (error) {
+      if (error instanceof Error && error.message === "EMPTY_INTERVENTION_TITLE") {
+        return res.status(400).json({ error: "Titel is verplicht" });
+      }
       if (error instanceof Error && error.message.startsWith("TEAM_NOT_DEPLOYED:")) {
         return res.status(400).json({
           error: `Niet-ingezette ploeg kan niet gekoppeld worden aan interventie: ${error.message.replace("TEAM_NOT_DEPLOYED:", "")}`,
@@ -2576,20 +2666,23 @@ export async function createApp() {
           throw new Error("TEAM_NOT_LINKED");
         }
 
-        const nowIso = new Date().toISOString();
+        const nowMs = Date.now();
+        const nowIso = new Date(nowMs).toISOString();
 
-        if (currentLink && Number(currentLink.status_id) !== Number(status_id)) {
+        if (Number(status.is_start) !== 1) {
           await trx("intervention_status_history")
             .where({ intervention_id: interventionId, team_id: teamId })
             .whereNull("ended_at")
-            .update({ ended_at: nowIso });
+            .update({ ended_at: nowIso, ended_at_ms: nowMs });
 
           await trx("intervention_status_history").insert({
             intervention_id: interventionId,
             team_id: teamId,
             status_id: status_id || null,
             started_at: nowIso,
+            started_at_ms: nowMs,
             ended_at: null,
+            ended_at_ms: null,
           });
         }
 
@@ -2600,7 +2693,7 @@ export async function createApp() {
           await trx("intervention_status_history")
             .where({ intervention_id: interventionId, team_id: teamId })
             .whereNull("ended_at")
-            .update({ ended_at: nowIso });
+            .update({ ended_at: nowIso, ended_at_ms: nowMs });
         } else {
           await trx("intervention_teams")
             .where({ intervention_id: interventionId, team_id: teamId })
@@ -2667,7 +2760,8 @@ export async function createApp() {
         if (!currentLink) throw new Error("TEAM_NOT_LINKED");
 
         const startStatusId = await resolveStartStatusId(trx, intervention.event_id, requestedStatusId);
-        const nowIso = new Date().toISOString();
+        const nowMs = Date.now();
+        const nowIso = new Date(nowMs).toISOString();
 
         await trx("intervention_teams")
           .where({ intervention_id: intervention.id, team_id: team.id })
@@ -2675,7 +2769,7 @@ export async function createApp() {
         await trx("intervention_status_history")
           .where({ intervention_id: intervention.id, team_id: team.id })
           .whereNull("ended_at")
-          .update({ ended_at: nowIso });
+          .update({ ended_at: nowIso, ended_at_ms: nowMs });
         await setTeamCurrentStatus(trx, intervention.event_id, team.id, startStatusId);
         const closeReason = await recalculateInterventionClosedState(trx, intervention.id);
 
@@ -3043,12 +3137,22 @@ export async function createApp() {
 
   app.post("/api/settings", requireRole(["ROOT", "ADMIN"]), sensitiveRateLimit, async (req, res) => {
     const settings = req.body;
-    await db.transaction(async trx => {
-      for (const [key, value] of Object.entries(settings)) {
-        await trx("settings").where({ key }).update({ value: String(value) });
+    try {
+      await db.transaction(async trx => {
+        for (const [key, value] of Object.entries(settings)) {
+          if (key === "timezone" && !normalizeTimezone(value)) {
+            throw new Error("INVALID_TIMEZONE");
+          }
+          await trx("settings").where({ key }).update({ value: String(value) });
+        }
+      });
+      res.json({ success: true });
+    } catch (error) {
+      if (error instanceof Error && error.message === "INVALID_TIMEZONE") {
+        return res.status(400).json({ error: "Ongeldige tijdzone" });
       }
-    });
-    res.json({ success: true });
+      throw error;
+    }
   });
 
   app.post("/api/settings/logo-upload", requireRole(["ROOT", "ADMIN"]), uploadRateLimit, async (req, res) => {

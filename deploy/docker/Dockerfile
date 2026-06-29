@@ -12,7 +12,7 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build
+RUN npm run clean && npm run build
 
 RUN mkdir -p /app/data /app/uploads
 
