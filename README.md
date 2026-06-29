@@ -207,33 +207,6 @@ Direct server command:
 docker compose -f deploy/docker/docker-compose.server.yml up -d --build
 ```
 
-## Run with Kubernetes
-
-Kubernetes manifests are in the `deploy/k8s/` folder.
-
-Quick apply (recommended):
-
-```bash
-kubectl apply -k deploy/k8s
-```
-
-Optional Redis for shared rate limiting:
-
-```bash
-kubectl apply -f deploy/k8s/redis-optional.yaml
-```
-
-Optional ingress:
-
-```bash
-kubectl apply -f deploy/k8s/ingress-optional.yaml -n cp-ops
-```
-
-Important:
-- Update `SESSION_SECRET` and `DEFAULT_ROOT_PASSWORD` in `deploy/k8s/secret.yaml` before deploying.
-- Make sure the deployment image in `deploy/k8s/deployment.yaml` is available to your cluster nodes.
-- If you enable Redis, set `REDIS_URL` in `deploy/k8s/configmap.yaml`.
-
 ## Security Notes
 
 Before any real deployment, you should at minimum:
