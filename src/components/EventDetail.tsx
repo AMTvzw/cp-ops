@@ -4,7 +4,7 @@ import {
   Plus, Users, Activity, FileText, Settings, 
   ChevronRight, MapPin, Clock, CheckCircle2, 
   AlertCircle, Download, Send, Trash2, UserPlus, Pencil, Save, X,
-  Building2, Phone, LogOut, Megaphone
+  Building2, Phone, LogOut, Megaphone, BarChart3
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -169,7 +169,7 @@ interface EventFormState {
   description: string;
 }
 
-type EventTab = 'info' | 'interventions' | 'team_status' | 'teams' | 'logs' | 'settings';
+type EventTab = 'info' | 'interventions' | 'statistics' | 'team_status' | 'teams' | 'logs' | 'settings';
 
 type EventTabConfig = {
   id: EventTab;
@@ -184,6 +184,7 @@ const EVENT_TABS: EventTabConfig[] = [
   { id: 'team_status', label: 'Ploegstatus', icon: Users },
   { id: 'teams', label: 'Ploegen', icon: Users },
   { id: 'logs', label: 'Logboek', icon: FileText },
+  { id: 'statistics', label: 'Statistieken', icon: BarChart3, roles: ['ROOT', 'ADMIN', 'OPERATOR'] },
   { id: 'settings', label: 'Instellingen', icon: Settings, roles: ['ROOT', 'ADMIN'] },
 ];
 
@@ -645,6 +646,87 @@ export default function EventDetail() {
     const elapsedSinceCalculation = Math.max(0, Math.floor((durationNow - calculatedAt) / 1000));
     return baseSeconds + elapsedSinceCalculation;
   };
+
+  const incrementStat = (map: Record<string, number>, key: string, amount = 1) => {
+    map[key] = (map[key] || 0) + amount;
+  };
+
+  const getTopStats = (map: Record<string, number>, limit = 5) =>
+    Object.entries(map)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, limit)
+      .map(([label, value]) => ({ label, value }));
+
+  const eventStats = (() => {
+    const totalInterventions = interventions.length;
+    const openInterventions = interventions.filter(inter => !inter.closed_at).length;
+    const closedInterventions = totalInterventions - openInterventions;
+    const openDurations = interventions
+      .map(inter => getLiveOpenDuration(inter))
+      .filter((seconds): seconds is number => seconds != null);
+    const totalOpenSeconds = openDurations.reduce((sum, seconds) => sum + seconds, 0);
+    const averageOpenSeconds = openDurations.length > 0 ? Math.round(totalOpenSeconds / openDurations.length) : null;
+    const longestIntervention = interventions.reduce<Intervention | null>((current, inter) => {
+      const currentDuration = current ? getLiveOpenDuration(current) ?? -1 : -1;
+      const nextDuration = getLiveOpenDuration(inter) ?? -1;
+      return nextDuration > currentDuration ? inter : current;
+    }, null);
+
+    const activeTeamIds = new Set<number>();
+    const interventionTeamLinks = new Set<string>();
+    const statusCounts: Record<string, number> = {};
+    const statusDurations: Record<string, number> = {};
+    const locationCounts: Record<string, number> = {};
+
+    for (const inter of interventions) {
+      incrementStat(locationCounts, inter.location?.trim() || 'Geen locatie');
+
+      for (const team of inter.teams) {
+        interventionTeamLinks.add(`${inter.id}-${team.id}`);
+        if (!inter.closed_at) activeTeamIds.add(team.id);
+      }
+
+      for (const entry of inter.team_history || []) {
+        const statusName = entry.status_name || 'Geen status';
+        const duration = getLiveStatusDuration(
+          entry.started_at,
+          entry.duration_seconds,
+          Boolean(entry.ended_at),
+          entry.duration_calculated_at
+        );
+        incrementStat(statusCounts, statusName);
+        if (duration != null) incrementStat(statusDurations, statusName, duration);
+      }
+    }
+
+    const deployedTeams = teams.filter(team => Number(team.is_deployed) === 1);
+    const aidPostCounts: Record<string, number> = {};
+    const currentTeamStatusCounts: Record<string, number> = {};
+
+    for (const team of deployedTeams) {
+      incrementStat(aidPostCounts, team.aid_post_name || 'Geen hulppost');
+      incrementStat(currentTeamStatusCounts, team.current_status_name || 'Geen status');
+    }
+
+    return {
+      totalInterventions,
+      openInterventions,
+      closedInterventions,
+      averageOpenSeconds,
+      longestIntervention,
+      longestInterventionSeconds: longestIntervention ? getLiveOpenDuration(longestIntervention) : null,
+      deployedTeams: deployedTeams.length,
+      inactiveTeams: teams.length - deployedTeams.length,
+      activeTeams: activeTeamIds.size,
+      availableTeams: deployedTeams.filter(team => !activeTeamIds.has(team.id)).length,
+      teamLinks: interventionTeamLinks.size,
+      topLocations: getTopStats(locationCounts),
+      topStatusCounts: getTopStats(statusCounts),
+      topStatusDurations: getTopStats(statusDurations),
+      aidPostCounts: getTopStats(aidPostCounts),
+      currentTeamStatusCounts: getTopStats(currentTeamStatusCounts),
+    };
+  })();
 
   const getDefaultInterventionStatusId = () => {
     const busy = statuses.find(s => Number(s.is_busy) === 1);
@@ -2256,6 +2338,163 @@ export default function EventDetail() {
                     </motion.div>
                   ))}
               </AnimatePresence>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'statistics' && !isViewer && hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && (
+          <div className="space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
+              <div>
+                <h2 className="text-xl font-semibold">Statistieken</h2>
+                <p className="text-sm text-slate-500">Live overzicht van interventies, ploegen en statussen.</p>
+              </div>
+              <div className="text-xs text-slate-400">
+                Laatst bijgewerkt: {formatTime(new Date(durationNow))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Interventies</p>
+                <p className="mt-2 text-3xl font-bold text-slate-900">{eventStats.totalInterventions}</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  {eventStats.openInterventions} open, {eventStats.closedInterventions} gesloten
+                </p>
+              </div>
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Gemiddelde open duur</p>
+                <p className="mt-2 text-3xl font-bold text-slate-900">{formatDuration(eventStats.averageOpenSeconds)}</p>
+                <p className="mt-1 text-sm text-slate-500">Over alle interventies met duurdata</p>
+              </div>
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Actieve ploegen</p>
+                <p className="mt-2 text-3xl font-bold text-slate-900">{eventStats.activeTeams}</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  {eventStats.availableTeams} beschikbaar van {eventStats.deployedTeams} ingezet
+                </p>
+              </div>
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Ploegkoppelingen</p>
+                <p className="mt-2 text-3xl font-bold text-slate-900">{eventStats.teamLinks}</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  {eventStats.inactiveTeams} ploegen niet ingezet
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <div className="flex items-center justify-between gap-3 mb-4">
+                  <h3 className="font-semibold text-slate-900">Statusduur</h3>
+                  <span className="text-xs text-slate-400">Op basis van ploeggeschiedenis</span>
+                </div>
+                <div className="space-y-3">
+                  {eventStats.topStatusDurations.map(item => {
+                    const max = Math.max(...eventStats.topStatusDurations.map(row => row.value), 1);
+                    const width = `${Math.max(4, Math.round((item.value / max) * 100))}%`;
+                    return (
+                      <div key={item.label}>
+                        <div className="flex justify-between gap-3 text-sm mb-1">
+                          <span className="font-medium text-slate-700 truncate">{item.label}</span>
+                          <span className="text-slate-500 whitespace-nowrap">{formatDuration(item.value)}</span>
+                        </div>
+                        <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                          <div
+                            className="h-full rounded-full"
+                            style={{ width, backgroundColor: settings.primary_color }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {eventStats.topStatusDurations.length === 0 && (
+                    <p className="text-sm text-slate-500">Nog geen statusgeschiedenis beschikbaar.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <h3 className="font-semibold text-slate-900 mb-4">Langste interventie</h3>
+                {eventStats.longestIntervention ? (
+                  <div className="space-y-2">
+                    <p className="text-lg font-bold text-slate-900">
+                      #{eventStats.longestIntervention.intervention_number ?? '-'} {eventStats.longestIntervention.title}
+                    </p>
+                    <p className="text-sm text-slate-500">{eventStats.longestIntervention.location || 'Geen locatie'}</p>
+                    <p className="text-2xl font-bold" style={{ color: settings.primary_color }}>
+                      {formatDuration(eventStats.longestInterventionSeconds)}
+                    </p>
+                    <p className="text-xs text-slate-400">
+                      {eventStats.longestIntervention.closed_at ? 'Gesloten interventie' : 'Open interventie'}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-500">Nog geen interventies.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <h3 className="font-semibold text-slate-900 mb-3">Statuswissels</h3>
+                <div className="space-y-2">
+                  {eventStats.topStatusCounts.map(item => (
+                    <div key={item.label} className="flex justify-between gap-3 text-sm">
+                      <span className="text-slate-600 truncate">{item.label}</span>
+                      <span className="font-semibold text-slate-900">{item.value}</span>
+                    </div>
+                  ))}
+                  {eventStats.topStatusCounts.length === 0 && (
+                    <p className="text-sm text-slate-500">Geen data.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <h3 className="font-semibold text-slate-900 mb-3">Huidige ploegstatus</h3>
+                <div className="space-y-2">
+                  {eventStats.currentTeamStatusCounts.map(item => (
+                    <div key={item.label} className="flex justify-between gap-3 text-sm">
+                      <span className="text-slate-600 truncate">{item.label}</span>
+                      <span className="font-semibold text-slate-900">{item.value}</span>
+                    </div>
+                  ))}
+                  {eventStats.currentTeamStatusCounts.length === 0 && (
+                    <p className="text-sm text-slate-500">Geen ingezette ploegen.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <h3 className="font-semibold text-slate-900 mb-3">Locaties</h3>
+                <div className="space-y-2">
+                  {eventStats.topLocations.map(item => (
+                    <div key={item.label} className="flex justify-between gap-3 text-sm">
+                      <span className="text-slate-600 truncate">{item.label}</span>
+                      <span className="font-semibold text-slate-900">{item.value}</span>
+                    </div>
+                  ))}
+                  {eventStats.topLocations.length === 0 && (
+                    <p className="text-sm text-slate-500">Geen interventies.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <h3 className="font-semibold text-slate-900 mb-3">Hulpposten</h3>
+                <div className="space-y-2">
+                  {eventStats.aidPostCounts.map(item => (
+                    <div key={item.label} className="flex justify-between gap-3 text-sm">
+                      <span className="text-slate-600 truncate">{item.label}</span>
+                      <span className="font-semibold text-slate-900">{item.value}</span>
+                    </div>
+                  ))}
+                  {eventStats.aidPostCounts.length === 0 && (
+                    <p className="text-sm text-slate-500">Geen ingezette ploegen.</p>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         )}
