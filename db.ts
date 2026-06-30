@@ -334,7 +334,37 @@ export async function initDb() {
       table.integer('status_id').unsigned().references('id').inTable('statuses');
       table.timestamp('started_at').defaultTo(db.fn.now());
       table.timestamp('ended_at');
+      table.bigInteger('started_at_ms');
+      table.bigInteger('ended_at_ms');
       table.index(['intervention_id', 'team_id']);
+    });
+  } else {
+    if (!await db.schema.hasColumn('intervention_status_history', 'started_at_ms')) {
+      await db.schema.table('intervention_status_history', (table) => {
+        table.bigInteger('started_at_ms');
+      });
+    }
+    if (!await db.schema.hasColumn('intervention_status_history', 'ended_at_ms')) {
+      await db.schema.table('intervention_status_history', (table) => {
+        table.bigInteger('ended_at_ms');
+      });
+    }
+  }
+
+  // Current Team Status Table (for teams that are not linked to an intervention)
+  if (!await db.schema.hasTable('team_current_statuses')) {
+    await db.schema.createTable('team_current_statuses', (table) => {
+      table.integer('team_id').unsigned().primary().references('id').inTable('teams').onDelete('CASCADE');
+      table.integer('event_id').unsigned().notNullable().references('id').inTable('events').onDelete('CASCADE');
+      table.integer('status_id').unsigned().references('id').inTable('statuses').onDelete('SET NULL');
+      table.timestamp('updated_at').defaultTo(db.fn.now());
+      table.bigInteger('updated_at_ms');
+      table.index(['event_id']);
+      table.index(['status_id']);
+    });
+  } else if (!await db.schema.hasColumn('team_current_statuses', 'updated_at_ms')) {
+    await db.schema.table('team_current_statuses', (table) => {
+      table.bigInteger('updated_at_ms');
     });
   }
 
@@ -403,7 +433,8 @@ export async function initDb() {
       { key: 'muted_text_color', value: '#475569' },
       { key: 'border_color', value: '#cbd5e1' },
       { key: 'danger_color', value: '#dc2626' },
-      { key: 'danger_hover_color', value: '#b91c1c' }
+      { key: 'danger_hover_color', value: '#b91c1c' },
+      { key: 'timezone', value: 'Europe/Brussels' }
     ]);
   }
 
@@ -459,6 +490,7 @@ export async function initDb() {
     border_color: '#cbd5e1',
     danger_color: '#dc2626',
     danger_hover_color: '#b91c1c',
+    timezone: 'Europe/Brussels',
   };
 
   for (const [key, value] of Object.entries(defaultSettings)) {
@@ -480,12 +512,46 @@ export async function initDb() {
         name: language.name,
         is_active: 1,
       });
+    } else if (existing.name !== language.name || Number(existing.is_active) !== 1) {
+      await db('app_languages')
+        .where({ code: language.code })
+        .update({
+          name: language.name,
+          is_active: 1,
+        });
     }
   }
 
   await db('users').whereNull('language_code').update({ language_code: 'en' });
 
   // Ensure each event has default team types
+  const openHistoryWithoutEpoch = await db('intervention_status_history')
+    .whereNull('ended_at')
+    .whereNull('started_at_ms')
+    .select('id');
+  if (openHistoryWithoutEpoch.length > 0) {
+    const nowMs = Date.now();
+    await db('intervention_status_history')
+      .whereIn('id', openHistoryWithoutEpoch.map((row: any) => row.id))
+      .update({
+        started_at: new Date(nowMs).toISOString(),
+        started_at_ms: nowMs,
+      });
+  }
+
+  const currentStatusesWithoutEpoch = await db('team_current_statuses')
+    .whereNull('updated_at_ms')
+    .select('team_id');
+  if (currentStatusesWithoutEpoch.length > 0) {
+    const nowMs = Date.now();
+    await db('team_current_statuses')
+      .whereIn('team_id', currentStatusesWithoutEpoch.map((row: any) => row.team_id))
+      .update({
+        updated_at: new Date(nowMs).toISOString(),
+        updated_at_ms: nowMs,
+      });
+  }
+
   const events = await db('events').select('id');
   for (const event of events) {
     let defaultAidPost = await db('aid_posts')
@@ -590,6 +656,29 @@ export async function initDb() {
         if (preferredBusy) {
           await db('statuses').where({ id: preferredBusy.id }).update({ is_busy: 1 });
         }
+      }
+    }
+
+    const startStatus = await db('statuses')
+      .where({ event_id: event.id, is_start: 1 })
+      .orderBy('id', 'asc')
+      .first();
+    if (startStatus) {
+      const eventTeams = await db('teams')
+        .where({ event_id: event.id })
+        .select('id');
+      for (const team of eventTeams) {
+        const existingCurrentStatus = await db('team_current_statuses')
+          .where({ team_id: team.id })
+          .first();
+        if (!existingCurrentStatus) {
+          await db('team_current_statuses').insert({
+          team_id: team.id,
+          event_id: event.id,
+          status_id: startStatus.id,
+          updated_at_ms: Date.now(),
+        });
+      }
       }
     }
   }

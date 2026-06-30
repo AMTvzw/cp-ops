@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { 
   Plus, Users, Activity, FileText, Settings, 
   ChevronRight, MapPin, Clock, CheckCircle2, 
   AlertCircle, Download, Send, Trash2, UserPlus, Pencil, Save, X,
-  Building2, Phone, LogOut, Megaphone
+  Building2, Phone, LogOut, Megaphone, BarChart3
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -47,6 +47,16 @@ interface Team {
   is_deployed: number;
   aid_post_id?: number | null;
   aid_post_name?: string | null;
+  current_status_id?: number | null;
+  current_status_name?: string | null;
+  current_status_color?: string | null;
+  current_status_updated_at?: string | null;
+  current_status_updated_at_ms?: number | null;
+  current_status_duration_seconds?: number | null;
+  current_status_duration_calculated_at?: string | null;
+  current_status_is_start?: number | null;
+  current_status_is_closed?: number | null;
+  current_status_is_busy?: number | null;
   members: TeamMember[];
 }
 
@@ -68,12 +78,30 @@ interface TeamInIntervention extends Team {
   status_color: string;
   status_is_closed: number;
   status_started_at?: string | null;
+  status_started_at_ms?: number | null;
   status_duration_seconds?: number | null;
+  status_duration_calculated_at?: string | null;
 }
 
 interface InterventionStatusDuration {
   status_name: string;
   total_seconds: number;
+}
+
+interface InterventionTeamHistory {
+  id: number;
+  team_id: number;
+  team_name: string;
+  team_type?: string | null;
+  status_id: number | null;
+  status_name: string | null;
+  status_color?: string | null;
+  started_at: string;
+  ended_at?: string | null;
+  started_at_ms?: number | null;
+  ended_at_ms?: number | null;
+  duration_seconds?: number | null;
+  duration_calculated_at?: string | null;
 }
 
 interface Intervention {
@@ -85,7 +113,9 @@ interface Intervention {
   created_at: string;
   closed_at: string | null;
   open_seconds?: number;
+  open_seconds_calculated_at?: string;
   status_durations?: InterventionStatusDuration[];
+  team_history?: InterventionTeamHistory[];
   teams: TeamInIntervention[];
 }
 
@@ -114,8 +144,10 @@ interface InterventionMessage {
 }
 
 interface InterventionEditState {
+  title: string;
   location: string;
   description: string;
+  addTeamStatusId: number;
   addTeamIds: number[];
   selectedAddTeamId: string;
 }
@@ -137,7 +169,7 @@ interface EventFormState {
   description: string;
 }
 
-type EventTab = 'info' | 'interventions' | 'team_status' | 'teams' | 'logs' | 'settings';
+type EventTab = 'info' | 'interventions' | 'statistics' | 'team_status' | 'teams' | 'logs' | 'settings';
 
 type EventTabConfig = {
   id: EventTab;
@@ -147,12 +179,13 @@ type EventTabConfig = {
 };
 
 const EVENT_TABS: EventTabConfig[] = [
-  { id: 'info', label: 'Event info', icon: FileText },
-  { id: 'interventions', label: 'Interventions', icon: Activity },
-  { id: 'team_status', label: 'Team status', icon: Users },
-  { id: 'teams', label: 'Teams', icon: Users },
-  { id: 'logs', label: 'Logs', icon: FileText },
-  { id: 'settings', label: 'Settings', icon: Settings, roles: ['ROOT', 'ADMIN'] },
+  { id: 'info', label: 'Evenementinfo', icon: FileText },
+  { id: 'interventions', label: 'Interventies', icon: Activity },
+  { id: 'team_status', label: 'Ploegstatus', icon: Users },
+  { id: 'teams', label: 'Ploegen', icon: Users },
+  { id: 'logs', label: 'Logboek', icon: FileText },
+  { id: 'statistics', label: 'Statistieken', icon: BarChart3, roles: ['ROOT', 'ADMIN', 'OPERATOR'] },
+  { id: 'settings', label: 'Instellingen', icon: Settings, roles: ['ROOT', 'ADMIN'] },
 ];
 
 const isEventAssignee = (value: unknown): value is EventAssignee => {
@@ -173,10 +206,15 @@ const isEventAssignee = (value: unknown): value is EventAssignee => {
 export default function EventDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user, logout, hasRole, settings, languageCode, t } = useUser();
   const isViewer = user?.role === 'VIEWER';
+  const requestedTab = searchParams.get('tab') as EventTab | null;
+  const initialTab: EventTab = requestedTab && EVENT_TABS.some(tab => tab.id === requestedTab)
+    ? requestedTab
+    : 'interventions';
   const [event, setEvent] = useState<Event | null>(null);
-  const [activeTab, setActiveTab] = useState<EventTab>('interventions');
+  const [activeTab, setActiveTabState] = useState<EventTab>(initialTab);
   const [settingsSubTab, setSettingsSubTab] = useState<'access' | 'team_types' | 'statuses'>('access');
   const [interventionTab, setInterventionTab] = useState<'open' | 'closed'>('open');
   const [interventionView, setInterventionView] = useState<'cards' | 'list'>('cards');
@@ -207,6 +245,7 @@ export default function EventDetail() {
     contact_info: '',
     description: '',
   });
+  const [eventFormDirty, setEventFormDirty] = useState(false);
   const [savingEventInfo, setSavingEventInfo] = useState(false);
 
   // Form states
@@ -214,6 +253,7 @@ export default function EventDetail() {
   const [newIntervention, setNewIntervention] = useState({ title: '', location: '', description: '', status_id: 0, team_ids: [] as number[] });
   const [showEventAnnouncement, setShowEventAnnouncement] = useState(false);
   const [eventAnnouncement, setEventAnnouncement] = useState({ message: '', bg_color: '#ef4444', is_active: false });
+  const [eventAnnouncementDirty, setEventAnnouncementDirty] = useState(false);
   
   const [showNewTeam, setShowNewTeam] = useState(false);
   const [newTeam, setNewTeam] = useState({ name: '', type: '', aid_post_id: '' });
@@ -243,16 +283,52 @@ export default function EventDetail() {
   const [eventAssignedUserIds, setEventAssignedUserIds] = useState<number[]>([]);
   const [eventAssignedAidPostIds, setEventAssignedAidPostIds] = useState<Record<number, string>>({});
   const [savingEventAssignments, setSavingEventAssignments] = useState(false);
+  const [teamStatusDrafts, setTeamStatusDrafts] = useState<Record<number, string>>({});
+  const [statusAidPostDrafts, setStatusAidPostDrafts] = useState<Record<string, string>>({});
+  const [teamStatusSaveState, setTeamStatusSaveState] = useState<Record<number, 'saving' | 'saved' | 'error'>>({});
+  const [interventionTeamStatusSaveState, setInterventionTeamStatusSaveState] = useState<Record<string, 'saving' | 'saved' | 'error'>>({});
+
+  const setActiveTab = (nextTab: EventTab) => {
+    setActiveTabState(nextTab);
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.set('tab', nextTab);
+    setSearchParams(nextParams, { replace: true });
+  };
+
+  const updateEventForm = (patch: Partial<EventFormState>) => {
+    setEventFormDirty(true);
+    setEventForm(prev => ({ ...prev, ...patch }));
+  };
+
+  const updateEventAnnouncement = (patch: Partial<typeof eventAnnouncement>) => {
+    setEventAnnouncementDirty(true);
+    setEventAnnouncement(prev => ({ ...prev, ...patch }));
+  };
 
   useEffect(() => {
     void fetchData();
   }, [id]);
 
   useEffect(() => {
+    const nextTab = searchParams.get('tab') as EventTab | null;
+    if (nextTab && EVENT_TABS.some(tab => tab.id === nextTab) && nextTab !== activeTab) {
+      setActiveTabState(nextTab);
+    }
+  }, [searchParams, activeTab]);
+
+  useEffect(() => {
     if (isViewer && activeTab !== 'team_status') {
       setActiveTab('team_status');
     }
   }, [isViewer, activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'team_status' && activeTab !== 'interventions') return;
+    const interval = window.setInterval(() => {
+      void fetchData({ background: true });
+    }, 15000);
+    return () => window.clearInterval(interval);
+  }, [activeTab, id, eventFormDirty, eventAnnouncementDirty]);
 
   useEffect(() => {
     fetchLogs(true);
@@ -269,21 +345,38 @@ export default function EventDetail() {
   }, [interventions]);
 
   useEffect(() => {
-    const nameDrafts: Record<number, string> = {};
-    const typeDrafts: Record<number, string> = {};
-    const aidPostDrafts: Record<number, string> = {};
-    const deployDrafts: Record<number, boolean> = {};
-    for (const team of teams) {
-      nameDrafts[team.id] = team.name;
-      typeDrafts[team.id] = team.type;
-      aidPostDrafts[team.id] = team.aid_post_id ? String(team.aid_post_id) : '';
-      deployDrafts[team.id] = Number(team.is_deployed) === 1;
-    }
-    setTeamNameDrafts(nameDrafts);
-    setTeamTypeDrafts(typeDrafts);
-    setTeamAidPostDrafts(aidPostDrafts);
-    setTeamDeployedDrafts(deployDrafts);
-  }, [teams]);
+    setTeamNameDrafts(prev => {
+      const next: Record<number, string> = {};
+      for (const team of teams) next[team.id] = editingTeamNameId === team.id ? (prev[team.id] ?? team.name) : team.name;
+      return next;
+    });
+    setTeamTypeDrafts(prev => {
+      const next: Record<number, string> = {};
+      for (const team of teams) next[team.id] = editingTeamNameId === team.id ? (prev[team.id] ?? team.type) : team.type;
+      return next;
+    });
+    setTeamAidPostDrafts(prev => {
+      const next: Record<number, string> = {};
+      for (const team of teams) {
+        const serverValue = team.aid_post_id ? String(team.aid_post_id) : '';
+        next[team.id] = editingTeamNameId === team.id ? (prev[team.id] ?? serverValue) : serverValue;
+      }
+      return next;
+    });
+    setTeamDeployedDrafts(prev => {
+      const next: Record<number, boolean> = {};
+      for (const team of teams) next[team.id] = prev[team.id] ?? (Number(team.is_deployed) === 1);
+      return next;
+    });
+    setTeamStatusDrafts(prev => {
+      const next: Record<number, string> = {};
+      for (const team of teams) {
+        const serverValue = team.current_status_id ? String(team.current_status_id) : '';
+        next[team.id] = teamStatusSaveState[team.id] === 'saving' ? (prev[team.id] ?? serverValue) : serverValue;
+      }
+      return next;
+    });
+  }, [teams, editingTeamNameId, teamStatusSaveState]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -329,15 +422,17 @@ export default function EventDetail() {
 
       if (eventData) {
         setEvent(eventData);
-        setEventForm({
-          name: eventData.name || '',
-          date: eventData.date || '',
-          end_date: eventData.end_date || '',
-          location: eventData.location || '',
-          organizer: eventData.organizer || '',
-          contact_info: eventData.contact_info || '',
-          description: eventData.description || '',
-        });
+        if (!eventFormDirty) {
+          setEventForm({
+            name: eventData.name || '',
+            date: eventData.date || '',
+            end_date: eventData.end_date || '',
+            location: eventData.location || '',
+            organizer: eventData.organizer || '',
+            contact_info: eventData.contact_info || '',
+            description: eventData.description || '',
+          });
+        }
       }
       if (interData) setInterventions(interData);
       if (teamData) setTeams(teamData);
@@ -365,7 +460,12 @@ export default function EventDetail() {
         setStatuses(statusData);
         if (statusData.length > 0) {
           const busy = statusData.find((s) => Number(s.is_busy) === 1);
-          setNewIntervention(prev => ({ ...prev, status_id: busy?.id || statusData[0].id }));
+          setNewIntervention(prev => {
+            if (prev.status_id && statusData.some(s => Number(s.id) === Number(prev.status_id))) {
+              return prev;
+            }
+            return { ...prev, status_id: busy?.id || statusData[0].id };
+          });
         }
       }
 
@@ -376,11 +476,13 @@ export default function EventDetail() {
       }>(`/api/events/${id}/announcement`);
       if (eventAnnouncementResult.response.ok && eventAnnouncementResult.data) {
         const data = eventAnnouncementResult.data;
-        setEventAnnouncement({
-          message: data.message || '',
-          bg_color: data.bg_color || '#ef4444',
-          is_active: !!data.is_active,
-        });
+        if (!eventAnnouncementDirty) {
+          setEventAnnouncement({
+            message: data.message || '',
+            bg_color: data.bg_color || '#ef4444',
+            is_active: !!data.is_active,
+          });
+        }
       }
       if (Array.isArray(logUsersData)) {
         setLogUsers(logUsersData);
@@ -461,6 +563,48 @@ export default function EventDetail() {
     setMessagesByIntervention(prev => ({ ...prev, [interventionId]: messages }));
   };
 
+  const getConfiguredTimezone = () => settings.timezone || 'Europe/Brussels';
+
+  const parseTimestamp = (value: string | Date) => {
+    if (value instanceof Date) return value;
+    const trimmed = String(value || '').trim();
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)) {
+      return new Date(`${trimmed.replace(' ', 'T')}Z`);
+    }
+    return new Date(trimmed);
+  };
+
+  const formatTime = (value: string | Date) =>
+    new Intl.DateTimeFormat(languageCode === 'nl' ? 'nl-BE' : 'en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: getConfiguredTimezone(),
+    }).format(parseTimestamp(value));
+
+  const formatDateTime = (value: string | Date) =>
+    new Intl.DateTimeFormat(languageCode === 'nl' ? 'nl-BE' : 'en-US', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      timeZone: getConfiguredTimezone(),
+    }).format(parseTimestamp(value));
+
+  const formatTimestampWithoutTimezone = (value?: string | Date | null, epochMs?: number | null) => {
+    if (epochMs != null && Number.isFinite(Number(epochMs))) {
+      return format(new Date(Number(epochMs)), 'yyyy-MM-dd HH:mm:ss');
+    }
+    if (!value) return '-';
+    if (value instanceof Date) return value.toISOString().slice(0, 19).replace('T', ' ');
+    return String(value)
+      .trim()
+      .replace('T', ' ')
+      .replace(/Z$/, '')
+      .replace(/\.\d+$/, '');
+  };
+
   const formatDuration = (seconds?: number | null) => {
     if (seconds == null) return '-';
     const total = Math.max(0, Math.floor(seconds));
@@ -477,19 +621,141 @@ export default function EventDetail() {
   const getLiveStatusDuration = (
     statusStartedAt?: string | null,
     fallbackSeconds?: number | null,
-    isClosed?: boolean
+    isClosed?: boolean,
+    calculatedAt?: string | null
   ) => {
     if (isClosed) return fallbackSeconds ?? null;
-    if (statusStartedAt) {
-      return Math.max(0, Math.floor((durationNow - new Date(statusStartedAt).getTime()) / 1000));
+    if (fallbackSeconds != null) {
+      const calculatedAtMs = calculatedAt ? parseTimestamp(calculatedAt).getTime() : durationNow;
+      const elapsedSinceCalculation = Math.max(0, Math.floor((durationNow - calculatedAtMs) / 1000));
+      return fallbackSeconds + elapsedSinceCalculation;
     }
-    return fallbackSeconds ?? null;
+    if (statusStartedAt) {
+      return Math.max(0, Math.floor((durationNow - parseTimestamp(statusStartedAt).getTime()) / 1000));
+    }
+    return null;
   };
+
+  const getLiveOpenDuration = (intervention: Intervention) => {
+    const baseSeconds = intervention.open_seconds ?? null;
+    if (baseSeconds == null) return null;
+    if (intervention.closed_at) return baseSeconds;
+    const calculatedAt = intervention.open_seconds_calculated_at
+      ? parseTimestamp(intervention.open_seconds_calculated_at).getTime()
+      : durationNow;
+    const elapsedSinceCalculation = Math.max(0, Math.floor((durationNow - calculatedAt) / 1000));
+    return baseSeconds + elapsedSinceCalculation;
+  };
+
+  const incrementStat = (map: Record<string, number>, key: string, amount = 1) => {
+    map[key] = (map[key] || 0) + amount;
+  };
+
+  const getTopStats = (map: Record<string, number>, limit = 5) =>
+    Object.entries(map)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, limit)
+      .map(([label, value]) => ({ label, value }));
+
+  const eventStats = (() => {
+    const totalInterventions = interventions.length;
+    const openInterventions = interventions.filter(inter => !inter.closed_at).length;
+    const closedInterventions = totalInterventions - openInterventions;
+    const openDurations = interventions
+      .map(inter => getLiveOpenDuration(inter))
+      .filter((seconds): seconds is number => seconds != null);
+    const totalOpenSeconds = openDurations.reduce((sum, seconds) => sum + seconds, 0);
+    const averageOpenSeconds = openDurations.length > 0 ? Math.round(totalOpenSeconds / openDurations.length) : null;
+    const longestIntervention = interventions.reduce<Intervention | null>((current, inter) => {
+      const currentDuration = current ? getLiveOpenDuration(current) ?? -1 : -1;
+      const nextDuration = getLiveOpenDuration(inter) ?? -1;
+      return nextDuration > currentDuration ? inter : current;
+    }, null);
+
+    const activeTeamIds = new Set<number>();
+    const interventionTeamLinks = new Set<string>();
+    const statusCounts: Record<string, number> = {};
+    const statusDurations: Record<string, number> = {};
+    const locationCounts: Record<string, number> = {};
+
+    for (const inter of interventions) {
+      incrementStat(locationCounts, inter.location?.trim() || 'Geen locatie');
+
+      for (const team of inter.teams) {
+        interventionTeamLinks.add(`${inter.id}-${team.id}`);
+        if (!inter.closed_at) activeTeamIds.add(team.id);
+      }
+
+      for (const entry of inter.team_history || []) {
+        const statusName = entry.status_name || 'Geen status';
+        const duration = getLiveStatusDuration(
+          entry.started_at,
+          entry.duration_seconds,
+          Boolean(entry.ended_at),
+          entry.duration_calculated_at
+        );
+        incrementStat(statusCounts, statusName);
+        if (duration != null) incrementStat(statusDurations, statusName, duration);
+      }
+    }
+
+    const deployedTeams = teams.filter(team => Number(team.is_deployed) === 1);
+    const aidPostCounts: Record<string, number> = {};
+    const currentTeamStatusCounts: Record<string, number> = {};
+
+    for (const team of deployedTeams) {
+      incrementStat(aidPostCounts, team.aid_post_name || 'Geen hulppost');
+      incrementStat(currentTeamStatusCounts, team.current_status_name || 'Geen status');
+    }
+
+    return {
+      totalInterventions,
+      openInterventions,
+      closedInterventions,
+      averageOpenSeconds,
+      longestIntervention,
+      longestInterventionSeconds: longestIntervention ? getLiveOpenDuration(longestIntervention) : null,
+      deployedTeams: deployedTeams.length,
+      inactiveTeams: teams.length - deployedTeams.length,
+      activeTeams: activeTeamIds.size,
+      availableTeams: deployedTeams.filter(team => !activeTeamIds.has(team.id)).length,
+      teamLinks: interventionTeamLinks.size,
+      topLocations: getTopStats(locationCounts),
+      topStatusCounts: getTopStats(statusCounts),
+      topStatusDurations: getTopStats(statusDurations),
+      aidPostCounts: getTopStats(aidPostCounts),
+      currentTeamStatusCounts: getTopStats(currentTeamStatusCounts),
+    };
+  })();
 
   const getDefaultInterventionStatusId = () => {
     const busy = statuses.find(s => Number(s.is_busy) === 1);
     if (busy) return busy.id;
     return statuses[0]?.id || 0;
+  };
+
+  const getStartStatusId = () => {
+    const start = statuses.find(s => Number(s.is_start) === 1);
+    if (start) return start.id;
+    return statuses[0]?.id || 0;
+  };
+
+  const emptyInterventionForm = () => ({
+    title: '',
+    location: '',
+    description: '',
+    status_id: getDefaultInterventionStatusId(),
+    team_ids: [] as number[],
+  });
+
+  const openNewInterventionModal = () => {
+    setNewIntervention(emptyInterventionForm());
+    setShowNewIntervention(true);
+  };
+
+  const cancelNewInterventionModal = () => {
+    setNewIntervention(emptyInterventionForm());
+    setShowNewIntervention(false);
   };
 
   const isStatusStartOrClosed = (statusId?: number | null) => {
@@ -516,21 +782,28 @@ export default function EventDetail() {
 
   const handleAddIntervention = async (e: React.FormEvent) => {
     e.preventDefault();
-    await fetch(`/api/events/${id}/interventions`, {
+    const res = await fetch(`/api/events/${id}/interventions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newIntervention)
     });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      alert(data?.error || 'Interventie aanmaken mislukt');
+      return;
+    }
     setShowNewIntervention(false);
-    setNewIntervention({ title: '', location: '', description: '', status_id: getDefaultInterventionStatusId(), team_ids: [] });
+    setNewIntervention(emptyInterventionForm());
     void fetchData({ background: true });
   };
 
   const beginEditIntervention = (inter: Intervention) => {
     setEditingInterventionId(inter.id);
     setInterventionEdit({
+      title: inter.title || '',
       location: inter.location || '',
       description: inter.description || '',
+      addTeamStatusId: getDefaultInterventionStatusId(),
       addTeamIds: [],
       selectedAddTeamId: '',
     });
@@ -541,30 +814,21 @@ export default function EventDetail() {
     setInterventionEdit(null);
   };
 
-  const addTeamToInterventionEdit = () => {
-    if (!interventionEdit?.selectedAddTeamId) return;
-    const teamId = Number(interventionEdit.selectedAddTeamId);
-    if (!teamId) return;
-    setInterventionEdit(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        addTeamIds: prev.addTeamIds.includes(teamId) ? prev.addTeamIds : [...prev.addTeamIds, teamId],
-        selectedAddTeamId: '',
-      };
-    });
-  };
-
   const saveInterventionEdit = async (interventionId: number) => {
     if (!interventionEdit) return;
+    if (!interventionEdit.title.trim()) {
+      alert('Titel is verplicht');
+      return;
+    }
     const res = await fetch(`/api/interventions/${interventionId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        title: interventionEdit.title.trim(),
         location: interventionEdit.location.trim(),
         description: interventionEdit.description.trim(),
         add_team_ids: interventionEdit.addTeamIds,
-        default_status_id: getDefaultInterventionStatusId() || null,
+        default_status_id: interventionEdit.addTeamStatusId || getDefaultInterventionStatusId() || null,
       }),
     });
 
@@ -580,20 +844,30 @@ export default function EventDetail() {
 
   const handleUpdateTeamStatus = async (interId: number, teamId: number, statusId: number) => {
     if (!hasRole(['ROOT', 'ADMIN', 'OPERATOR'])) return;
+    const statusKey = getTeamStatusEditorKey(interId, teamId);
+    const destinationAidPostId = statusAidPostDrafts[statusKey];
+    const previousInterventions = interventions;
+    setInterventionTeamStatusSaveState(prev => ({ ...prev, [statusKey]: 'saving' }));
     const res = await fetch(`/api/interventions/${interId}/teams/${teamId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status_id: statusId })
+      body: JSON.stringify({
+        status_id: statusId,
+        aid_post_id: destinationAidPostId ? Number(destinationAidPostId) : null,
+      })
     });
     if (!res.ok) {
       const data = await res.json().catch(() => null);
+      setInterventions(previousInterventions);
+      setInterventionTeamStatusSaveState(prev => ({ ...prev, [statusKey]: 'error' }));
       alert(data?.error || 'Status wijzigen mislukt');
       return;
     }
 
     const selectedStatus = statuses.find(s => Number(s.id) === Number(statusId));
     if (selectedStatus) {
-      const nowIso = new Date().toISOString();
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
       setInterventions(prev =>
         prev.map(inter => {
           if (Number(inter.id) !== Number(interId)) return inter;
@@ -607,7 +881,9 @@ export default function EventDetail() {
               status_color: selectedStatus.color,
               status_is_closed: selectedStatus.is_closed,
               status_started_at: nowIso,
+              status_started_at_ms: nowMs,
               status_duration_seconds: 0,
+              status_duration_calculated_at: nowIso,
             };
           });
 
@@ -623,7 +899,66 @@ export default function EventDetail() {
       );
     }
 
+    setInterventionTeamStatusSaveState(prev => ({ ...prev, [statusKey]: 'saved' }));
+    window.setTimeout(() => {
+      setInterventionTeamStatusSaveState(prev => {
+        if (prev[statusKey] !== 'saved') return prev;
+        const next = { ...prev };
+        delete next[statusKey];
+        return next;
+      });
+    }, 1800);
+    setStatusAidPostDrafts(prev => ({ ...prev, [statusKey]: '' }));
+    void fetchData({ background: true });
+  };
+
+  const handleUnlinkTeamFromIntervention = async (interId: number, teamId: number, label = 'ontkoppelen') => {
+    if (!hasRole(['ROOT', 'ADMIN', 'OPERATOR'])) return;
+    const isOvtz = label.toUpperCase() === 'OVTZ';
+    const res = await fetch(`/api/interventions/${interId}/teams/${teamId}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status_id: getStartStatusId() || null,
+        action: isOvtz ? 'ovtz' : 'unlink',
+      }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      alert(data?.error || `Ploeg ${label} mislukt`);
+      return;
+    }
     setExpandedTeamStatusKey(null);
+    void fetchData({ background: true });
+    fetchLogs(true);
+  };
+
+  const handleUpdateStandaloneTeamStatus = async (teamId: number, statusId: number) => {
+    if (!hasRole(['ROOT', 'ADMIN', 'OPERATOR'])) return;
+    setTeamStatusSaveState(prev => ({ ...prev, [teamId]: 'saving' }));
+    const res = await fetch(`/api/teams/${teamId}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status_id: statusId }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      setTeamStatusSaveState(prev => ({ ...prev, [teamId]: 'error' }));
+      alert(data?.error || 'Ploegstatus wijzigen mislukt');
+      return;
+    }
+    setTeamStatusDrafts(prev => ({ ...prev, [teamId]: String(statusId) }));
+    setTeamStatusSaveState(prev => ({ ...prev, [teamId]: 'saved' }));
+    window.setTimeout(() => {
+      setTeamStatusSaveState(prev => {
+        if (prev[teamId] !== 'saved') return prev;
+        const next = { ...prev };
+        delete next[teamId];
+        return next;
+      });
+    }, 1800);
+    void fetchData({ background: true });
+    fetchLogs(true);
   };
 
   const handleAddTeam = async (e: React.FormEvent) => {
@@ -983,7 +1318,7 @@ export default function EventDetail() {
 
   const handleCloseEmptyIntervention = async (interventionId: number, title: string) => {
     if (!hasRole(['ROOT', 'ADMIN', 'OPERATOR'])) return;
-    if (!confirm(`Interventie "${title}" sluiten? Dit kan alleen als er nooit een ploeg gekoppeld is geweest.`)) return;
+    if (!confirm(`Interventie "${title}" sluiten? Dit kan alleen als er geen actieve ploeg meer gekoppeld is.`)) return;
 
     const res = await fetch(`/api/interventions/${interventionId}/close-empty`, {
       method: 'PATCH',
@@ -1182,6 +1517,7 @@ export default function EventDetail() {
         contact_info: eventForm.contact_info || undefined,
         description: eventForm.description,
       } : prev);
+      setEventFormDirty(false);
       fetchLogs(true);
     } finally {
       setSavingEventInfo(false);
@@ -1200,6 +1536,7 @@ export default function EventDetail() {
       alert(data?.error || 'Event melding opslaan mislukt');
       return;
     }
+    setEventAnnouncementDirty(false);
     setShowEventAnnouncement(false);
     void fetchData({ background: true });
   };
@@ -1357,7 +1694,7 @@ export default function EventDetail() {
                         <input
                           type="text"
                           value={eventForm.name}
-                          onChange={(e) => setEventForm(prev => ({ ...prev, name: e.target.value }))}
+                          onChange={(e) => updateEventForm({ name: e.target.value })}
                           className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
                           placeholder="Naam evenement"
                         />
@@ -1367,7 +1704,7 @@ export default function EventDetail() {
                         <input
                           type="date"
                           value={eventForm.date}
-                          onChange={(e) => setEventForm(prev => ({ ...prev, date: e.target.value }))}
+                          onChange={(e) => updateEventForm({ date: e.target.value })}
                           className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
                         />
                       </div>
@@ -1376,7 +1713,7 @@ export default function EventDetail() {
                         <input
                           type="date"
                           value={eventForm.end_date}
-                          onChange={(e) => setEventForm(prev => ({ ...prev, end_date: e.target.value }))}
+                          onChange={(e) => updateEventForm({ end_date: e.target.value })}
                           className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
                         />
                       </div>
@@ -1385,7 +1722,7 @@ export default function EventDetail() {
                         <input
                           type="text"
                           value={eventForm.location}
-                          onChange={(e) => setEventForm(prev => ({ ...prev, location: e.target.value }))}
+                          onChange={(e) => updateEventForm({ location: e.target.value })}
                           className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
                           placeholder="Locatie"
                         />
@@ -1395,7 +1732,7 @@ export default function EventDetail() {
                         <input
                           type="text"
                           value={eventForm.organizer}
-                          onChange={(e) => setEventForm(prev => ({ ...prev, organizer: e.target.value }))}
+                          onChange={(e) => updateEventForm({ organizer: e.target.value })}
                           className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
                           placeholder="Organisator"
                         />
@@ -1405,7 +1742,7 @@ export default function EventDetail() {
                         <input
                           type="text"
                           value={eventForm.contact_info}
-                          onChange={(e) => setEventForm(prev => ({ ...prev, contact_info: e.target.value }))}
+                          onChange={(e) => updateEventForm({ contact_info: e.target.value })}
                           className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
                           placeholder="Contactinformatie"
                         />
@@ -1414,7 +1751,7 @@ export default function EventDetail() {
                         <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-1">Omschrijving</label>
                         <textarea
                           value={eventForm.description}
-                          onChange={(e) => setEventForm(prev => ({ ...prev, description: e.target.value }))}
+                          onChange={(e) => updateEventForm({ description: e.target.value })}
                           className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm min-h-[96px]"
                           placeholder="Omschrijving van dit evenement"
                         />
@@ -1441,11 +1778,11 @@ export default function EventDetail() {
               <h2 className="text-xl font-semibold">Interventies</h2>
               {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && (
                 <button
-                  onClick={() => setShowNewIntervention(true)}
+                  onClick={openNewInterventionModal}
                   className="text-white px-4 py-2 rounded-lg flex items-center justify-center gap-2 transition-colors text-sm font-medium w-full sm:w-auto"
                   style={{ backgroundColor: settings.primary_color }}
                 >
-                  <Plus className="w-4 h-4" /> Nieuwe Interventie
+                  <Plus className="w-4 h-4" /> Nieuwe interventie
                 </button>
               )}
             </div>
@@ -1503,7 +1840,7 @@ export default function EventDetail() {
                           #{inter.intervention_number ?? '-'} {inter.title}
                         </h3>
                         <div className="flex items-center gap-2">
-                          {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && !inter.closed_at && inter.teams.length === 0 && (inter.status_durations?.length || 0) === 0 && (
+                          {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && !inter.closed_at && inter.teams.length === 0 && (
                             <button
                               onClick={() => handleCloseEmptyIntervention(inter.id, inter.title)}
                               className="text-slate-300 hover:text-emerald-600 transition-colors"
@@ -1537,16 +1874,35 @@ export default function EventDetail() {
                         <div className="flex items-center gap-2">
                           <MapPin className="w-4 h-4" /> {inter.location || 'Geen locatie'}
                         </div>
+                        {(inter.description || '').trim() && (
+                          <div className="flex items-start gap-2">
+                            <FileText className="w-4 h-4 mt-0.5" />
+                            <span className="whitespace-pre-wrap break-words">{inter.description}</span>
+                          </div>
+                        )}
                         <div className="flex items-center gap-2">
-                          <Clock className="w-4 h-4" /> {format(new Date(inter.created_at), 'HH:mm')}
+                          <Clock className="w-4 h-4" /> {formatTime(inter.created_at)}
                         </div>
                         <div className="flex items-center gap-2">
-                          <Clock className="w-4 h-4" /> Open duur: {formatDuration(inter.open_seconds)}
+                          <Clock className="w-4 h-4" /> Open duur: {formatDuration(getLiveOpenDuration(inter))}
                         </div>
                       </div>
 
                       {editingInterventionId === inter.id && interventionEdit && (
                         <div className="mb-4 p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
+                          <div>
+                            <label className="block text-xs font-semibold text-slate-600 mb-1">Titel</label>
+                            <input
+                              type="text"
+                              required
+                              value={interventionEdit.title}
+                              onChange={(e) =>
+                                setInterventionEdit(prev => prev ? { ...prev, title: e.target.value } : prev)
+                              }
+                              className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
+                              placeholder="Titel interventie"
+                            />
+                          </div>
                           <div>
                             <label className="block text-xs font-semibold text-slate-600 mb-1">Locatie</label>
                             <input
@@ -1585,41 +1941,97 @@ export default function EventDetail() {
                           {!inter.closed_at && (
                             <div className="grid grid-cols-1 gap-3">
                               <div>
+                                <label className="block text-xs font-semibold text-slate-600 mb-1">
+                                  Initiële status voor nieuwe ploegen
+                                </label>
+                                <select
+                                  value={interventionEdit.addTeamStatusId}
+                                  onChange={(e) =>
+                                    setInterventionEdit(prev => prev ? { ...prev, addTeamStatusId: Number(e.target.value) } : prev)
+                                  }
+                                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
+                                >
+                                  {statuses.map(s => (
+                                    <option key={s.id} value={s.id}>
+                                      {s.name}
+                                      {s.is_busy ? ' (bezig)' : s.is_start ? ' (begin)' : s.is_closed ? ' (eind)' : ''}
+                                    </option>
+                                  ))}
+                                </select>
+                                {interventionEdit.addTeamIds.length > 0 && (
+                                  <p className="mt-1 text-xs text-slate-500">
+                                    Deze status wordt toegepast bij opslaan op de ploegen die hieronder klaarstaan.
+                                  </p>
+                                )}
+                              </div>
+                              <div>
                                 <label className="block text-xs font-semibold text-slate-600 mb-1">Ploeg toevoegen</label>
-                                <div className="flex flex-col sm:flex-row gap-2">
-                                  <select
-                                    value={interventionEdit.selectedAddTeamId}
-                                    onChange={(e) =>
-                                      setInterventionEdit(prev => prev ? { ...prev, selectedAddTeamId: e.target.value } : prev)
-                                    }
-                                    className="flex-1 px-3 py-2 rounded-lg border border-slate-200 text-sm"
-                                  >
-                                    <option value="">Kies ploeg...</option>
-                                    {teams
-                                      .filter(t => {
-                                        const currentlyLinked = inter.teams.some(it => it.id === t.id);
-                                        const pendingAdded = interventionEdit.addTeamIds.includes(t.id);
-                                        const isDeployed = Number(t.is_deployed) === 1;
-                                        return (!currentlyLinked || pendingAdded)
-                                          && canTeamBeAddedToIntervention(t.id, inter.id)
-                                          && isDeployed;
-                                      })
-                                      .filter(t => {
-                                        const currentlyLinked = inter.teams.some(it => it.id === t.id);
-                                        return !currentlyLinked;
-                                      })
-                                      .map(t => (
-                                        <option key={t.id} value={t.id}>{t.name}</option>
-                                      ))}
-                                  </select>
-                                  <button
-                                    type="button"
-                                    onClick={addTeamToInterventionEdit}
-                                    className="px-3 py-2 rounded-lg border border-slate-200 text-sm hover:bg-white w-full sm:w-auto"
-                                  >
-                                    Toevoegen
-                                  </button>
-                                </div>
+                                <select
+                                  value={interventionEdit.selectedAddTeamId}
+                                  onChange={(e) => {
+                                    const teamId = Number(e.target.value);
+                                    setInterventionEdit(prev => {
+                                      if (!prev) return prev;
+                                      if (!teamId) return { ...prev, selectedAddTeamId: '' };
+                                      return {
+                                        ...prev,
+                                        addTeamIds: prev.addTeamIds.includes(teamId)
+                                          ? prev.addTeamIds
+                                          : [...prev.addTeamIds, teamId],
+                                        selectedAddTeamId: '',
+                                      };
+                                    });
+                                  }}
+                                  className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm"
+                                >
+                                  <option value="">Kies ploeg om klaar te zetten...</option>
+                                  {teams
+                                    .filter(t => {
+                                      const currentlyLinked = inter.teams.some(it => it.id === t.id);
+                                      const pendingAdded = interventionEdit.addTeamIds.includes(t.id);
+                                      const isDeployed = Number(t.is_deployed) === 1;
+                                      return (!currentlyLinked && !pendingAdded)
+                                        && canTeamBeAddedToIntervention(t.id, inter.id)
+                                        && isDeployed;
+                                    })
+                                    .map(t => (
+                                      <option key={t.id} value={t.id}>{t.name}</option>
+                                    ))}
+                                </select>
+                                {interventionEdit.addTeamIds.length > 0 && (
+                                  <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                                    <p className="text-xs font-semibold uppercase tracking-wider text-emerald-700 mb-2">
+                                      Klaar om te koppelen bij opslaan
+                                    </p>
+                                    <div className="space-y-2">
+                                    {interventionEdit.addTeamIds.map(teamId => {
+                                      const pendingTeam = teams.find(t => t.id === teamId);
+                                      if (!pendingTeam) return null;
+                                      return (
+                                        <div
+                                          key={teamId}
+                                          className="flex items-center justify-between gap-3 rounded-md bg-white border border-emerald-100 px-3 py-2 text-sm text-emerald-900"
+                                        >
+                                          <span className="font-medium">{pendingTeam.name}</span>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              setInterventionEdit(prev => prev
+                                                ? { ...prev, addTeamIds: prev.addTeamIds.filter(id => id !== teamId) }
+                                                : prev
+                                              )
+                                            }
+                                            className="text-emerald-500 hover:text-emerald-700"
+                                            title="Nog niet opgeslagen ploeg verwijderen"
+                                          >
+                                            <X className="w-4 h-4" />
+                                          </button>
+                                        </div>
+                                      );
+                                    })}
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             </div>
                           )}
@@ -1638,7 +2050,7 @@ export default function EventDetail() {
                               className="px-3 py-2 rounded-lg text-white text-sm"
                               style={{ backgroundColor: settings.primary_color }}
                             >
-                              Opslaan
+                              {interventionEdit.addTeamIds.length > 0 ? 'Opslaan en koppelen' : 'Opslaan'}
                             </button>
                           </div>
                         </div>
@@ -1646,9 +2058,7 @@ export default function EventDetail() {
 
                       <div className="space-y-4">
                         {(() => {
-                          const visibleTeams = interventionView === 'cards'
-                            ? inter.teams.filter(team => Number(team.status_is_closed) !== 1)
-                            : inter.teams;
+                          const visibleTeams = inter.teams;
 
                           if (visibleTeams.length === 0) {
                             return (
@@ -1661,6 +2071,8 @@ export default function EventDetail() {
                           return visibleTeams.map(team => {
                             const statusKey = getTeamStatusEditorKey(inter.id, team.id);
                             const isExpanded = expandedTeamStatusKey === statusKey;
+                            const teamTimeline = (inter.team_history || [])
+                              .filter(entry => Number(entry.team_id) === Number(team.id));
 
                             return (
                               <div key={team.id} className="pt-3 border-t border-slate-100">
@@ -1680,16 +2092,60 @@ export default function EventDetail() {
                                   </div>
                                 </button>
                                 {!inter.closed_at && (
-                                  <div className="text-[11px] text-slate-500 mb-2">
-                                    Op huidige status: {formatDuration(
-                                      getLiveStatusDuration(
-                                        team.status_started_at,
-                                        team.status_duration_seconds,
-                                        Boolean(inter.closed_at)
-                                      )
-                                    )}
+                                  <div className="text-[11px] text-slate-500 mb-2 space-y-0.5">
+                                    <div>Start status: {formatTimestampWithoutTimezone(team.status_started_at, team.status_started_at_ms)}</div>
+                                    <div>
+                                      Duur huidige status: {formatDuration(
+                                        getLiveStatusDuration(
+                                          team.status_started_at,
+                                          team.status_duration_seconds,
+                                          Boolean(inter.closed_at),
+                                          team.status_duration_calculated_at
+                                        )
+                                      )}
+                                    </div>
                                   </div>
                                 )}
+                                <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 p-2">
+                                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">
+                                    Tijdlijn
+                                  </p>
+                                  <div className="space-y-2 max-h-40 overflow-y-auto">
+                                    {teamTimeline.map(entry => {
+                                      const seconds = entry.duration_seconds != null
+                                        ? getLiveStatusDuration(
+                                            entry.started_at,
+                                            entry.duration_seconds,
+                                            Boolean(entry.ended_at),
+                                            entry.duration_calculated_at
+                                          )
+                                        : getLiveStatusDuration(entry.started_at, null, Boolean(entry.ended_at));
+                                      return (
+                                        <div key={entry.id} className="text-xs text-slate-700 rounded bg-white border border-slate-100 p-2">
+                                          <div className="flex flex-wrap items-center gap-2 mb-1">
+                                            <span
+                                              className="px-2 py-0.5 rounded text-[10px] font-bold text-white uppercase"
+                                              style={{ backgroundColor: entry.status_color || '#64748b' }}
+                                            >
+                                              {entry.status_name || 'Geen status'}
+                                            </span>
+                                            <span className="text-[10px] text-slate-400">
+                                              {formatDuration(seconds)}
+                                            </span>
+                                          </div>
+                                          <div className="text-[11px] text-slate-500">
+                                            {formatTimestampWithoutTimezone(entry.started_at, entry.started_at_ms)}
+                                            {' tot '}
+                                            {entry.ended_at ? formatTimestampWithoutTimezone(entry.ended_at, entry.ended_at_ms) : 'heden'}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                    {teamTimeline.length === 0 && (
+                                      <div className="text-xs text-slate-400 italic">Nog geen statusgeschiedenis.</div>
+                                    )}
+                                  </div>
+                                </div>
                                 {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && !inter.closed_at && (
                                   <>
                                     {!isExpanded && (
@@ -1703,29 +2159,89 @@ export default function EventDetail() {
                                     )}
                                     {isExpanded && (
                                       <div className="space-y-2">
-                                        <div className="flex flex-wrap gap-1">
-                                          {statuses.map(s => (
-                                            <button
-                                              key={s.id}
-                                              onClick={() => handleUpdateTeamStatus(inter.id, team.id, s.id)}
-                                              className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition-all ${
-                                                team.status_id === s.id
-                                                  ? 'ring-2 ring-offset-1 ring-slate-300 opacity-100'
-                                                  : 'opacity-40 hover:opacity-80'
-                                              }`}
-                                              style={{ backgroundColor: s.color, color: '#fff' }}
-                                            >
-                                              {s.name}
-                                            </button>
-                                          ))}
+                                        <div>
+                                          <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                                            Nieuwe status
+                                          </label>
+                                          <select
+                                            value={team.status_id || ''}
+                                            disabled={interventionTeamStatusSaveState[statusKey] === 'saving'}
+                                            onChange={(e) => {
+                                              const nextStatusId = Number(e.target.value);
+                                              if (nextStatusId && nextStatusId !== Number(team.status_id)) {
+                                                void handleUpdateTeamStatus(inter.id, team.id, nextStatusId);
+                                              }
+                                            }}
+                                            className="w-full px-2 py-1.5 rounded border border-slate-200 text-xs bg-white"
+                                          >
+                                            {statuses.map(s => (
+                                              <option key={s.id} value={s.id}>
+                                                {s.name}
+                                                {s.is_start ? ' (ontkoppelt)' : s.is_closed ? ' (sluitend)' : ''}
+                                              </option>
+                                            ))}
+                                          </select>
+                                          {interventionTeamStatusSaveState[statusKey] === 'saving' && (
+                                            <p className="mt-1 text-xs text-slate-500">Status opslaan...</p>
+                                          )}
+                                          {interventionTeamStatusSaveState[statusKey] === 'saved' && (
+                                            <p className="mt-1 text-xs text-emerald-600">Status opgeslagen</p>
+                                          )}
+                                          {interventionTeamStatusSaveState[statusKey] === 'error' && (
+                                            <p className="mt-1 text-xs text-red-600">Status opslaan mislukt</p>
+                                          )}
+                                          <button
+                                            type="button"
+                                            disabled={interventionTeamStatusSaveState[statusKey] === 'saving' || !team.status_id}
+                                            onClick={() => {
+                                              if (team.status_id) void handleUpdateTeamStatus(inter.id, team.id, Number(team.status_id));
+                                            }}
+                                            className="mt-2 w-full px-2 py-1.5 rounded border border-slate-200 text-xs text-slate-600 hover:bg-white disabled:opacity-50"
+                                          >
+                                            Herstart huidige status
+                                          </button>
                                         </div>
-                                        <button
-                                          type="button"
-                                          onClick={() => setExpandedTeamStatusKey(null)}
-                                          className="text-xs text-slate-500 hover:text-slate-700"
-                                        >
-                                          Sluiten
-                                        </button>
+                                        <div>
+                                          <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                                            Bestemmingshulppost bij afvoer
+                                          </label>
+                                          <select
+                                            value={statusAidPostDrafts[statusKey] || ''}
+                                            onChange={(e) =>
+                                              setStatusAidPostDrafts(prev => ({ ...prev, [statusKey]: e.target.value }))
+                                            }
+                                            className="w-full px-2 py-1.5 rounded border border-slate-200 text-xs"
+                                          >
+                                            <option value="">Geen wijziging</option>
+                                            {aidPosts.map(post => (
+                                              <option key={post.id} value={post.id}>{post.name}</option>
+                                            ))}
+                                          </select>
+                                        </div>
+                                        <div className="flex flex-wrap gap-2">
+                                          <button
+                                            type="button"
+                                            onClick={() => handleUnlinkTeamFromIntervention(inter.id, team.id)}
+                                            className="text-xs px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+                                          >
+                                            Ontkoppelen
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleUnlinkTeamFromIntervention(inter.id, team.id, 'OVTZ')}
+                                            className="text-xs px-2 py-1 rounded border border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                                            title="Ontkoppelen en radiografisch beschikbaar zetten"
+                                          >
+                                            OVTZ
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => setExpandedTeamStatusKey(null)}
+                                            className="text-xs text-slate-500 hover:text-slate-700"
+                                          >
+                                            Sluiten
+                                          </button>
+                                        </div>
                                       </div>
                                     )}
                                   </>
@@ -1739,7 +2255,7 @@ export default function EventDetail() {
                       {inter.closed_at && (inter.status_durations?.length || 0) > 0 && (
                         <div className="mt-4 pt-3 border-t border-slate-100">
                           <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
-                            Duur Per Status
+                            Duur per status
                           </p>
                           <div className="space-y-1">
                             {inter.status_durations?.map((d) => (
@@ -1752,9 +2268,43 @@ export default function EventDetail() {
                         </div>
                       )}
 
+                      {inter.closed_at && (inter.team_history?.length || 0) > 0 && (
+                        <div className="mt-4 pt-3 border-t border-slate-100">
+                          <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                            Ploeggeschiedenis
+                          </p>
+                          <div className="space-y-2 max-h-56 overflow-y-auto">
+                            {inter.team_history?.map((entry) => (
+                              <div key={entry.id} className="rounded-lg bg-white border border-slate-100 p-2 text-xs text-slate-600">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-semibold text-slate-800">{entry.team_name}</span>
+                                  <span
+                                    className="px-2 py-0.5 rounded text-[10px] font-bold text-white uppercase"
+                                    style={{ backgroundColor: entry.status_color || '#64748b' }}
+                                  >
+                                    {entry.status_name || 'Geen status'}
+                                  </span>
+                                </div>
+                                <div className="mt-1">
+                                  {formatDateTime(entry.started_at)}
+                                  {' tot '}
+                                  {entry.ended_at ? formatDateTime(entry.ended_at) : 'heden'}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                       <div className="mt-4 pt-3 border-t border-slate-100 space-y-2">
                         <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Meldingen</p>
-                        <div className="flex flex-col sm:flex-row gap-2">
+                        <form
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            void handleAddInterventionMessage(inter.id);
+                          }}
+                          className="flex flex-col sm:flex-row gap-2"
+                        >
                           <input
                             type="text"
                             value={newMessageByIntervention[inter.id] || ''}
@@ -1763,19 +2313,19 @@ export default function EventDetail() {
                             className="flex-1 px-3 py-2 rounded-lg border border-slate-200 text-sm"
                           />
                           <button
-                            onClick={() => handleAddInterventionMessage(inter.id)}
+                            type="submit"
                             className="px-3 py-2 rounded-lg text-white text-sm w-full sm:w-auto flex items-center justify-center"
                             style={{ backgroundColor: settings.primary_color }}
                           >
                             <Send className="w-4 h-4" />
                           </button>
-                        </div>
+                        </form>
                         <div className="space-y-2 max-h-40 overflow-y-auto">
                           {(messagesByIntervention[inter.id] || []).map(msg => (
                             <div key={msg.id} className="p-2 rounded-lg bg-slate-50 border border-slate-100">
                               <div className="flex justify-between text-[11px] text-slate-500 mb-1">
                                 <span>{msg.actor_username || 'Systeem'}</span>
-                                <span>{format(new Date(msg.created_at), 'dd-MM-yyyy HH:mm:ss')}</span>
+                                <span>{formatDateTime(msg.created_at)}</span>
                               </div>
                               <div className="text-sm text-slate-700">{msg.message}</div>
                             </div>
@@ -1788,6 +2338,163 @@ export default function EventDetail() {
                     </motion.div>
                   ))}
               </AnimatePresence>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'statistics' && !isViewer && hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && (
+          <div className="space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-2">
+              <div>
+                <h2 className="text-xl font-semibold">Statistieken</h2>
+                <p className="text-sm text-slate-500">Live overzicht van interventies, ploegen en statussen.</p>
+              </div>
+              <div className="text-xs text-slate-400">
+                Laatst bijgewerkt: {formatTime(new Date(durationNow))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Interventies</p>
+                <p className="mt-2 text-3xl font-bold text-slate-900">{eventStats.totalInterventions}</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  {eventStats.openInterventions} open, {eventStats.closedInterventions} gesloten
+                </p>
+              </div>
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Gemiddelde open duur</p>
+                <p className="mt-2 text-3xl font-bold text-slate-900">{formatDuration(eventStats.averageOpenSeconds)}</p>
+                <p className="mt-1 text-sm text-slate-500">Over alle interventies met duurdata</p>
+              </div>
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Actieve ploegen</p>
+                <p className="mt-2 text-3xl font-bold text-slate-900">{eventStats.activeTeams}</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  {eventStats.availableTeams} beschikbaar van {eventStats.deployedTeams} ingezet
+                </p>
+              </div>
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Ploegkoppelingen</p>
+                <p className="mt-2 text-3xl font-bold text-slate-900">{eventStats.teamLinks}</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  {eventStats.inactiveTeams} ploegen niet ingezet
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <div className="flex items-center justify-between gap-3 mb-4">
+                  <h3 className="font-semibold text-slate-900">Statusduur</h3>
+                  <span className="text-xs text-slate-400">Op basis van ploeggeschiedenis</span>
+                </div>
+                <div className="space-y-3">
+                  {eventStats.topStatusDurations.map(item => {
+                    const max = Math.max(...eventStats.topStatusDurations.map(row => row.value), 1);
+                    const width = `${Math.max(4, Math.round((item.value / max) * 100))}%`;
+                    return (
+                      <div key={item.label}>
+                        <div className="flex justify-between gap-3 text-sm mb-1">
+                          <span className="font-medium text-slate-700 truncate">{item.label}</span>
+                          <span className="text-slate-500 whitespace-nowrap">{formatDuration(item.value)}</span>
+                        </div>
+                        <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                          <div
+                            className="h-full rounded-full"
+                            style={{ width, backgroundColor: settings.primary_color }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {eventStats.topStatusDurations.length === 0 && (
+                    <p className="text-sm text-slate-500">Nog geen statusgeschiedenis beschikbaar.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <h3 className="font-semibold text-slate-900 mb-4">Langste interventie</h3>
+                {eventStats.longestIntervention ? (
+                  <div className="space-y-2">
+                    <p className="text-lg font-bold text-slate-900">
+                      #{eventStats.longestIntervention.intervention_number ?? '-'} {eventStats.longestIntervention.title}
+                    </p>
+                    <p className="text-sm text-slate-500">{eventStats.longestIntervention.location || 'Geen locatie'}</p>
+                    <p className="text-2xl font-bold" style={{ color: settings.primary_color }}>
+                      {formatDuration(eventStats.longestInterventionSeconds)}
+                    </p>
+                    <p className="text-xs text-slate-400">
+                      {eventStats.longestIntervention.closed_at ? 'Gesloten interventie' : 'Open interventie'}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-500">Nog geen interventies.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <h3 className="font-semibold text-slate-900 mb-3">Statuswissels</h3>
+                <div className="space-y-2">
+                  {eventStats.topStatusCounts.map(item => (
+                    <div key={item.label} className="flex justify-between gap-3 text-sm">
+                      <span className="text-slate-600 truncate">{item.label}</span>
+                      <span className="font-semibold text-slate-900">{item.value}</span>
+                    </div>
+                  ))}
+                  {eventStats.topStatusCounts.length === 0 && (
+                    <p className="text-sm text-slate-500">Geen data.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <h3 className="font-semibold text-slate-900 mb-3">Huidige ploegstatus</h3>
+                <div className="space-y-2">
+                  {eventStats.currentTeamStatusCounts.map(item => (
+                    <div key={item.label} className="flex justify-between gap-3 text-sm">
+                      <span className="text-slate-600 truncate">{item.label}</span>
+                      <span className="font-semibold text-slate-900">{item.value}</span>
+                    </div>
+                  ))}
+                  {eventStats.currentTeamStatusCounts.length === 0 && (
+                    <p className="text-sm text-slate-500">Geen ingezette ploegen.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <h3 className="font-semibold text-slate-900 mb-3">Locaties</h3>
+                <div className="space-y-2">
+                  {eventStats.topLocations.map(item => (
+                    <div key={item.label} className="flex justify-between gap-3 text-sm">
+                      <span className="text-slate-600 truncate">{item.label}</span>
+                      <span className="font-semibold text-slate-900">{item.value}</span>
+                    </div>
+                  ))}
+                  {eventStats.topLocations.length === 0 && (
+                    <p className="text-sm text-slate-500">Geen interventies.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+                <h3 className="font-semibold text-slate-900 mb-3">Hulpposten</h3>
+                <div className="space-y-2">
+                  {eventStats.aidPostCounts.map(item => (
+                    <div key={item.label} className="flex justify-between gap-3 text-sm">
+                      <span className="text-slate-600 truncate">{item.label}</span>
+                      <span className="font-semibold text-slate-900">{item.value}</span>
+                    </div>
+                  ))}
+                  {eventStats.aidPostCounts.length === 0 && (
+                    <p className="text-sm text-slate-500">Geen ingezette ploegen.</p>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -1980,7 +2687,7 @@ export default function EventDetail() {
                                 className="flex-1 py-2 rounded-lg text-white text-xs font-medium"
                                 style={{ backgroundColor: settings.primary_color }}
                               >
-                                Naam Opslaan
+                                Naam opslaan
                               </button>
                               <button
                                 type="button"
@@ -2072,7 +2779,71 @@ export default function EventDetail() {
                     </div>
 
                     {openAssignments.length === 0 ? (
-                      <div className="text-sm text-slate-400 italic">Geen actieve interventies.</div>
+                      <div className="space-y-3">
+                        <div className="text-sm text-slate-500">
+                          Geen actieve interventies.
+                        </div>
+                        <div className="rounded-lg bg-slate-50 border border-slate-100 p-3">
+                          <div className="flex items-center justify-between gap-2 mb-2">
+                            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                              Radiostatus
+                            </span>
+                            <span
+                              className="px-2 py-0.5 rounded text-[10px] font-bold text-white uppercase"
+                              style={{ backgroundColor: team.current_status_color || '#64748b' }}
+                            >
+                              {team.current_status_name || 'Geen status'}
+                            </span>
+                          </div>
+                          {team.current_status_updated_at && (
+                            <div className="text-xs text-slate-500 mb-2 space-y-0.5">
+                              <div>Start status: {formatTimestampWithoutTimezone(team.current_status_updated_at, team.current_status_updated_at_ms)}</div>
+                              <div>
+                                Duur huidige status: {formatDuration(
+                                  getLiveStatusDuration(
+                                    team.current_status_updated_at,
+                                    team.current_status_duration_seconds,
+                                    false,
+                                    team.current_status_duration_calculated_at
+                                  )
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          {hasRole(['ROOT', 'ADMIN', 'OPERATOR']) && (
+                            <div className="space-y-2 min-w-0">
+                              <select
+                                value={teamStatusDrafts[team.id] || ''}
+                                onChange={(e) => {
+                                  const nextValue = e.target.value;
+                                  setTeamStatusDrafts(prev => ({ ...prev, [team.id]: nextValue }));
+                                  const nextStatusId = Number(nextValue);
+                                  if (nextStatusId) void handleUpdateStandaloneTeamStatus(team.id, nextStatusId);
+                                }}
+                                disabled={teamStatusSaveState[team.id] === 'saving'}
+                                className="w-full min-w-0 px-3 py-2 rounded-lg border border-slate-200 text-sm"
+                              >
+                                <option value="">Kies status...</option>
+                                {statuses.map(status => (
+                                  <option key={status.id} value={status.id}>
+                                    {status.name}
+                                    {status.is_start ? ' (radiografisch beschikbaar)' : ''}
+                                  </option>
+                                ))}
+                              </select>
+                              {teamStatusSaveState[team.id] === 'saving' && (
+                                <p className="text-xs text-slate-500">Opslaan...</p>
+                              )}
+                              {teamStatusSaveState[team.id] === 'saved' && (
+                                <p className="text-xs text-emerald-600">Status opgeslagen</p>
+                              )}
+                              {teamStatusSaveState[team.id] === 'error' && (
+                                <p className="text-xs text-red-600">Status opslaan mislukt</p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     ) : (
                       <div className="space-y-2">
                         {openAssignments.map(({ intervention, assignment }) => (
@@ -2092,14 +2863,18 @@ export default function EventDetail() {
                             <div className="text-xs text-slate-500 mt-1">
                               Omschrijving: {intervention.description || '-'}
                             </div>
-                            <div className="text-xs text-slate-500 mt-1">
-                              Op status sinds: {formatDuration(
-                                getLiveStatusDuration(
-                                  assignment.status_started_at,
-                                  assignment.status_duration_seconds,
-                                  Boolean(intervention.closed_at)
-                                )
-                              )}
+                            <div className="text-xs text-slate-500 mt-1 space-y-0.5">
+                              <div>Start status: {formatTimestampWithoutTimezone(assignment.status_started_at, assignment.status_started_at_ms)}</div>
+                              <div>
+                                Duur huidige status: {formatDuration(
+                                  getLiveStatusDuration(
+                                    assignment.status_started_at,
+                                    assignment.status_duration_seconds,
+                                    Boolean(intervention.closed_at),
+                                    assignment.status_duration_calculated_at
+                                  )
+                                )}
+                              </div>
                             </div>
                           </div>
                         ))}
@@ -2124,7 +2899,9 @@ export default function EventDetail() {
                   >
                     <option value="">Geen interventie</option>
                     {interventions.map(inter => (
-                      <option key={inter.id} value={inter.id}>{inter.title}</option>
+                      <option key={inter.id} value={inter.id}>
+                        #{inter.intervention_number ?? '-'} {inter.title}
+                      </option>
                     ))}
                   </select>
                   <select
@@ -2184,7 +2961,9 @@ export default function EventDetail() {
               >
                 <option value="">Alle interventies</option>
                 {interventions.map(inter => (
-                  <option key={inter.id} value={inter.id}>{inter.title}</option>
+                  <option key={inter.id} value={inter.id}>
+                    #{inter.intervention_number ?? '-'} {inter.title}
+                  </option>
                 ))}
               </select>
             </div>
@@ -2192,14 +2971,17 @@ export default function EventDetail() {
             <div className="space-y-4">
               {logs.map((log) => {
                 const teamName = log.team_id ? teams.find(t => t.id === log.team_id)?.name : null;
-                const interventionTitle = log.intervention_id
-                  ? interventions.find(i => i.id === log.intervention_id)?.title
+                const logIntervention = log.intervention_id
+                  ? interventions.find(i => i.id === log.intervention_id)
+                  : null;
+                const interventionTitle = logIntervention
+                  ? `#${logIntervention.intervention_number ?? '-'} ${logIntervention.title}`
                   : null;
                 return (
                   <div key={log.id} className="p-4 bg-white rounded-xl border border-slate-100 shadow-sm">
                     <div className="flex flex-wrap items-center gap-2 mb-2 text-xs">
                       <span className="font-mono text-slate-400">
-                        {format(new Date(log.created_at), 'dd-MM-yyyy HH:mm:ss')}
+                        {formatDateTime(log.created_at)}
                       </span>
                       <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">
                         {log.actor_username || 'Systeem'}
@@ -2365,7 +3147,7 @@ export default function EventDetail() {
                     disabled={savingEventAssignments}
                     className="w-full bg-slate-900 text-white py-2 rounded-lg text-sm font-medium hover:bg-slate-800 disabled:opacity-60"
                   >
-                    {savingEventAssignments ? 'Opslaan...' : 'Toegang Opslaan'}
+                    {savingEventAssignments ? 'Opslaan...' : 'Toegang opslaan'}
                   </button>
                 </div>
               </section>
@@ -2373,7 +3155,7 @@ export default function EventDetail() {
 
             {settingsSubTab === 'team_types' && (
               <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 md:p-6">
-                <h3 className="text-lg font-semibold mb-4">Teamsoorten Beheren</h3>
+                <h3 className="text-lg font-semibold mb-4">Teamsoorten beheren</h3>
                 <details open className="border border-slate-200 rounded-xl overflow-hidden mb-4">
                   <summary className="cursor-pointer px-4 py-3 bg-slate-50 font-semibold text-slate-800">Bestaande teamsoorten</summary>
                   <div className="p-4 space-y-2">
@@ -2439,7 +3221,7 @@ export default function EventDetail() {
                   <summary className="cursor-pointer px-4 py-3 bg-slate-50 font-semibold text-slate-800">Nieuwe teamsoort</summary>
                   <div className="p-4">
                     <form onSubmit={handleAddTeamType} className="p-4 bg-slate-100 rounded-xl space-y-4">
-                      <h4 className="text-sm font-bold text-slate-600 uppercase">Nieuwe Teamsoort</h4>
+                      <h4 className="text-sm font-bold text-slate-600 uppercase">Nieuwe teamsoort</h4>
                       <input
                         type="text"
                         placeholder="Bijv. Verkeer"
@@ -2449,7 +3231,7 @@ export default function EventDetail() {
                         required
                       />
                       <button className="w-full bg-slate-800 text-white py-2 rounded-lg text-sm font-medium hover:bg-slate-900 transition-colors">
-                        Teamsoort Toevoegen
+                        Teamsoort toevoegen
                       </button>
                     </form>
                   </div>
@@ -2459,7 +3241,7 @@ export default function EventDetail() {
 
             {settingsSubTab === 'statuses' && (
               <section className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 md:p-6">
-                <h3 className="text-lg font-semibold mb-4">Statussen Beheren</h3>
+                <h3 className="text-lg font-semibold mb-4">Statussen beheren</h3>
                 <details open className="border border-slate-200 rounded-xl overflow-hidden mb-4">
                   <summary className="cursor-pointer px-4 py-3 bg-slate-50 font-semibold text-slate-800">Bestaande statussen</summary>
                   <div className="p-4 space-y-3">
@@ -2576,7 +3358,7 @@ export default function EventDetail() {
                   <summary className="cursor-pointer px-4 py-3 bg-slate-50 font-semibold text-slate-800">Nieuwe status</summary>
                   <div className="p-4">
                     <form onSubmit={handleAddStatus} className="p-4 bg-slate-100 rounded-xl space-y-4">
-                      <h4 className="text-sm font-bold text-slate-600 uppercase">Nieuwe Status</h4>
+                      <h4 className="text-sm font-bold text-slate-600 uppercase">Nieuwe status</h4>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <input
                           type="text"
@@ -2630,7 +3412,7 @@ export default function EventDetail() {
                         Markeer als 'Bezig' status
                       </label>
                       <button className="w-full bg-slate-800 text-white py-2 rounded-lg text-sm font-medium hover:bg-slate-900 transition-colors">
-                        Status Toevoegen
+                        Status toevoegen
                       </button>
                     </form>
                   </div>
@@ -2649,7 +3431,7 @@ export default function EventDetail() {
             animate={{ scale: 1, opacity: 1 }}
             className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto"
           >
-            <h2 className="text-2xl font-bold mb-6">Nieuwe Interventie</h2>
+            <h2 className="text-2xl font-bold mb-6">Nieuwe interventie</h2>
             <form onSubmit={handleAddIntervention} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">Titel</label>
@@ -2696,7 +3478,7 @@ export default function EventDetail() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Ploegen Koppelen</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Ploegen koppelen</label>
                 <div className="grid grid-cols-2 gap-2 max-h-32 overflow-y-auto p-2 border border-slate-100 rounded-lg">
                   {teams.filter(team => Number(team.is_deployed) === 1).map(team => (
                     <label key={team.id} className={`flex items-center gap-2 text-xs ${!canTeamBeAddedToIntervention(team.id, 0) ? 'opacity-50' : ''}`}>
@@ -2721,7 +3503,7 @@ export default function EventDetail() {
               <div className="flex flex-col sm:flex-row gap-3 mt-8">
                 <button 
                   type="button"
-                  onClick={() => setShowNewIntervention(false)}
+                  onClick={cancelNewInterventionModal}
                   className="flex-1 px-4 py-2 border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50"
                 >
                   Annuleren
@@ -2747,7 +3529,7 @@ export default function EventDetail() {
             className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto"
           >
             <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
-              <Megaphone className="text-red-600" /> Event Melding
+              <Megaphone className="text-red-600" /> Eventmelding
             </h2>
             <form onSubmit={handleUpdateEventAnnouncement} className="space-y-4">
               <div>
@@ -2755,7 +3537,7 @@ export default function EventDetail() {
                 <textarea
                   required
                   value={eventAnnouncement.message}
-                  onChange={e => setEventAnnouncement(prev => ({ ...prev, message: e.target.value }))}
+                  onChange={e => updateEventAnnouncement({ message: e.target.value })}
                   className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-red-500 outline-none transition-all h-28"
                   placeholder="Typ hier de event melding..."
                 />
@@ -2767,7 +3549,7 @@ export default function EventDetail() {
                     <button
                       key={color}
                       type="button"
-                      onClick={() => setEventAnnouncement(prev => ({ ...prev, bg_color: color }))}
+                      onClick={() => updateEventAnnouncement({ bg_color: color })}
                       className={`w-10 h-10 rounded-full border-2 ${eventAnnouncement.bg_color === color ? 'border-slate-900 ring-2 ring-slate-200' : 'border-transparent'}`}
                       style={{ backgroundColor: color }}
                     />
@@ -2775,7 +3557,7 @@ export default function EventDetail() {
                   <input
                     type="color"
                     value={eventAnnouncement.bg_color}
-                    onChange={e => setEventAnnouncement(prev => ({ ...prev, bg_color: e.target.value }))}
+                    onChange={e => updateEventAnnouncement({ bg_color: e.target.value })}
                     className="w-10 h-10 rounded-full border-none p-0 overflow-hidden cursor-pointer"
                   />
                 </div>
@@ -2784,7 +3566,7 @@ export default function EventDetail() {
                 <input
                   type="checkbox"
                   checked={eventAnnouncement.is_active}
-                  onChange={e => setEventAnnouncement(prev => ({ ...prev, is_active: e.target.checked }))}
+                  onChange={e => updateEventAnnouncement({ is_active: e.target.checked })}
                   className="w-4 h-4 rounded border-slate-300 text-red-600 focus:ring-red-500"
                 />
                 Toon eventbanner aan iedereen in dit evenement

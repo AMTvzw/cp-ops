@@ -5,15 +5,14 @@ services:
       dockerfile: deploy/docker/Dockerfile
     image: cp-ops:latest
     container_name: cp-ops
+    env_file:
+      - ../../.env
     ports:
       - "31987:31987"
     environment:
       NODE_ENV: production
       PORT: "31987"
-      DB_CLIENT: sqlite3
-      DB_FILENAME: /app/data/cp_ops.sqlite
-      SESSION_IDLE_TIMEOUT_MINUTES: "30"
-      UPLOAD_STORAGE: fs
+      # Database, upload storage, session, public origin and secrets are read from ../../.env.
       # Optional external MariaDB/MySQL:
       # DB_HOST: your-db-host
       # DB_PORT: "3306"
@@ -32,18 +31,39 @@ services:
       # DB_POOL_REAP_INTERVAL_MS: "1000"
       # DB_ACQUIRE_CONNECTION_TIMEOUT_MS: "15000"
       # UPLOAD_STORAGE: "db"
-      SESSION_SECRET: "replace-with-a-long-random-secret-min-32"
-      DEFAULT_ROOT_USERNAME: root
-      DEFAULT_ROOT_PASSWORD: "replace-this-password"
       # Optional shared rate limiting backend:
       # REDIS_URL: redis://redis:6379
     volumes:
       - cp_ops_data:/app/data
       - cp_ops_uploads:/app/uploads
     restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+        required: false
     # Uncomment if REDIS_URL is enabled
     # depends_on:
     #   - redis
+
+  mariadb:
+    image: mariadb:11
+    container_name: cp-ops-mariadb
+    profiles:
+      - mariadb
+    environment:
+      MARIADB_DATABASE: ${MARIADB_DATABASE:-cp_ops}
+      MARIADB_USER: ${MARIADB_USER:-cp_ops}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-replace-this-db-password}
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-replace-this-root-db-password}
+    volumes:
+      - cp_ops_mariadb:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -uroot -p$${MARIADB_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
 
   # Optional Redis for shared rate limiting across instances
   # redis:
@@ -56,4 +76,5 @@ services:
 volumes:
   cp_ops_data:
   cp_ops_uploads:
+  cp_ops_mariadb:
   # cp_ops_redis:

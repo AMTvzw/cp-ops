@@ -8,30 +8,9 @@ services:
     env_file:
       - ../../.env
     environment:
-      NODE_ENV: ${NODE_ENV:-production}
-      PORT: ${PORT:-31987}
-      # SQLite defaults (only used when DB_CLIENT=sqlite3)
-      DB_CLIENT: ${DB_CLIENT:-sqlite3}
-      DB_FILENAME: ${DB_FILENAME:-/app/data/cp_ops.sqlite}
-      # Optional external MariaDB/MySQL
-      DB_HOST: ${DB_HOST:-}
-      DB_PORT: ${DB_PORT:-3306}
-      DB_USER: ${DB_USER:-}
-      DB_PASSWORD: ${DB_PASSWORD:-}
-      DB_NAME: ${DB_NAME:-}
-      DB_URL: ${DB_URL:-}
-      DB_SSL: ${DB_SSL:-}
-      DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-}
-      DB_CONNECT_TIMEOUT_MS: ${DB_CONNECT_TIMEOUT_MS:-15000}
-      DB_POOL_MIN: ${DB_POOL_MIN:-0}
-      DB_POOL_MAX: ${DB_POOL_MAX:-10}
-      DB_POOL_CREATE_TIMEOUT_MS: ${DB_POOL_CREATE_TIMEOUT_MS:-10000}
-      DB_POOL_ACQUIRE_TIMEOUT_MS: ${DB_POOL_ACQUIRE_TIMEOUT_MS:-15000}
-      DB_POOL_IDLE_TIMEOUT_MS: ${DB_POOL_IDLE_TIMEOUT_MS:-30000}
-      DB_POOL_REAP_INTERVAL_MS: ${DB_POOL_REAP_INTERVAL_MS:-1000}
-      DB_ACQUIRE_CONNECTION_TIMEOUT_MS: ${DB_ACQUIRE_CONNECTION_TIMEOUT_MS:-15000}
-      SESSION_IDLE_TIMEOUT_MINUTES: ${SESSION_IDLE_TIMEOUT_MINUTES:-30}
-      UPLOAD_STORAGE: ${UPLOAD_STORAGE:-fs}
+      NODE_ENV: production
+      PORT: "31987"
+      # Database, upload storage, session, public origin and secrets are read from ../../.env.
     ports:
       - "${PORT:-31987}:${PORT:-31987}"
     volumes:

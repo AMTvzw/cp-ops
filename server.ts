@@ -41,6 +41,25 @@ const normalizeDateKey = (value: unknown): string | null => {
   return trimmed;
 };
 
+const timestampMs = (value: unknown): number => {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value !== "string") return new Date(String(value || "")).getTime();
+  const trimmed = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)) {
+    return new Date(`${trimmed.replace(" ", "T")}Z`).getTime();
+  }
+  return new Date(trimmed).getTime();
+};
+
+const durationSecondsFromEpoch = (fromMs: number | null, toMs: number, maxSeconds?: number | null) => {
+  if (!fromMs || !Number.isFinite(fromMs)) return null;
+  const seconds = Math.max(0, Math.floor((toMs - fromMs) / 1000));
+  if (maxSeconds != null && Number.isFinite(maxSeconds) && seconds > maxSeconds + 5) {
+    return 0;
+  }
+  return seconds;
+};
+
 const addDaysToDateKey = (dateKey: string, days: number): string => {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey);
   if (!match) return dateKey;
@@ -147,6 +166,46 @@ const collectUiLiteralCandidates = async () => {
   return [...literals].sort((a, b) => a.localeCompare(b));
 };
 
+const parseBooleanEnv = (value: unknown): boolean | null => {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return null;
+};
+
+const parseCsvEnv = (value: unknown): string[] => {
+  if (typeof value !== "string") return [];
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+};
+
+const parseSessionCookieSecure = (value: unknown, isProduction: boolean): boolean | "auto" => {
+  if (typeof value !== "string" || !value.trim()) return isProduction ? "auto" : false;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "auto") return "auto";
+  return parseBooleanEnv(normalized) ?? (isProduction ? "auto" : false);
+};
+
+const parseSessionCookieSameSite = (value: unknown): "lax" | "strict" | "none" => {
+  if (typeof value !== "string" || !value.trim()) return "lax";
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "strict" || normalized === "none") return normalized;
+  return "lax";
+};
+
+const hostFromUrl = (value: string): string | null => {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.host;
+  } catch {
+    return null;
+  }
+};
+
 // Extend express-session to include custom properties
 declare module 'express-session' {
   interface SessionData {
@@ -162,7 +221,7 @@ export async function createApp() {
   const configuredSessionIdleTimeoutMinutes = Number(process.env.SESSION_IDLE_TIMEOUT_MINUTES);
   const sessionIdleTimeoutMinutes = Number.isFinite(configuredSessionIdleTimeoutMinutes) && configuredSessionIdleTimeoutMinutes > 0
     ? configuredSessionIdleTimeoutMinutes
-    : 30;
+    : 60;
   const sessionIdleTimeoutMs = Math.trunc(sessionIdleTimeoutMinutes * 60 * 1000);
   const defaultRootUsername = process.env.DEFAULT_ROOT_USERNAME || "root";
   const defaultRootPassword = process.env.DEFAULT_ROOT_PASSWORD;
@@ -170,6 +229,17 @@ export async function createApp() {
   const sessionSecret = (configuredSessionSecret && configuredSessionSecret.length >= 32)
     ? configuredSessionSecret
     : (isProduction ? null : "dev-only-insecure-session-secret-change-me-123456");
+  const sessionCookieSecure = parseSessionCookieSecure(process.env.SESSION_COOKIE_SECURE, isProduction);
+  const sessionCookieSameSite = parseSessionCookieSameSite(process.env.SESSION_COOKIE_SAMESITE);
+  const allowedCsrfHosts = new Set(
+    [
+      ...parseCsvEnv(process.env.PUBLIC_ORIGIN),
+      ...parseCsvEnv(process.env.APP_ORIGIN),
+      ...parseCsvEnv(process.env.ALLOWED_ORIGINS),
+    ]
+      .map(hostFromUrl)
+      .filter((entry): entry is string => Boolean(entry)),
+  );
 
   if (!sessionSecret) {
     throw new Error("SESSION_SECRET is required and must be at least 32 characters long");
@@ -209,11 +279,11 @@ export async function createApp() {
     rolling: true,
     name: 'cp_ops_session',
     cookie: { 
-      secure: isProduction,
-      sameSite: isProduction ? 'none' : 'lax',
+      secure: sessionCookieSecure,
+      sameSite: sessionCookieSameSite,
       httpOnly: true,
       maxAge: sessionIdleTimeoutMs
-    }
+    } as any
   }));
 
   app.use((req, res, next) => {
@@ -348,14 +418,23 @@ export async function createApp() {
     const mutating = req.method === "POST" || req.method === "PUT" || req.method === "PATCH" || req.method === "DELETE";
     if (!mutating) return next();
 
-    const host = String(req.get("host") || "");
+    const requestHosts = new Set(allowedCsrfHosts);
+    const host = String(req.get("host") || "").trim();
+    if (host) requestHosts.add(host);
+    const forwardedHost = String(req.get("x-forwarded-host") || "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .at(0);
+    if (forwardedHost) requestHosts.add(forwardedHost);
+
     const origin = req.get("origin");
     const referer = req.get("referer");
 
     const sameHost = (value: string) => {
       try {
         const parsed = new URL(value);
-        return parsed.host === host && (parsed.protocol === "http:" || parsed.protocol === "https:");
+        return requestHosts.has(parsed.host) && (parsed.protocol === "http:" || parsed.protocol === "https:");
       } catch {
         return false;
       }
@@ -403,6 +482,18 @@ export async function createApp() {
     const normalized = value.trim().toLowerCase();
     if (!/^[a-z0-9][a-z0-9_-]{1,15}$/.test(normalized)) return null;
     return normalized;
+  };
+
+  const normalizeTimezone = (value: unknown): string | null => {
+    if (typeof value !== "string") return null;
+    const normalized = value.trim();
+    if (!normalized || normalized.length > 64) return null;
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: normalized }).format(new Date());
+      return normalized;
+    } catch {
+      return null;
+    }
   };
 
   const hasEventAccess = async (req: any, eventId: number | string) => {
@@ -478,11 +569,23 @@ export async function createApp() {
       .where("it.intervention_id", interventionId)
       .select("s.is_closed");
 
-    // Interventions without linked teams are managed manually (if needed)
-    if (allTeams.length === 0) return;
-
     const allClosed = allTeams.length > 0 && allTeams.every((t: any) => Number(t.is_closed) === 1);
     const nowIso = new Date().toISOString();
+    const nowMs = Date.now();
+
+    if (allTeams.length === 0 && !intervention.closed_at) {
+      await trx("interventions")
+        .where({ id: interventionId })
+        .update({ closed_at: nowIso });
+
+      await trx("intervention_status_history")
+        .where({ intervention_id: interventionId })
+        .whereNull("ended_at")
+        .update({ ended_at: nowIso, ended_at_ms: nowMs });
+      return "closed_no_active_teams";
+    }
+
+    if (allTeams.length === 0) return null;
 
     if (allClosed && !intervention.closed_at) {
       await trx("interventions")
@@ -492,8 +595,8 @@ export async function createApp() {
       await trx("intervention_status_history")
         .where({ intervention_id: interventionId })
         .whereNull("ended_at")
-        .update({ ended_at: nowIso });
-      return;
+        .update({ ended_at: nowIso, ended_at_ms: nowMs });
+      return "closed_all_teams";
     }
 
     if (!allClosed && intervention.closed_at) {
@@ -518,13 +621,51 @@ export async function createApp() {
           team_id: r.team_id,
           status_id: r.status_id || null,
           started_at: nowIso,
+          started_at_ms: nowMs,
           ended_at: null,
+          ended_at_ms: null,
         }));
 
       if (missingRows.length > 0) {
         await trx("intervention_status_history").insert(missingRows);
       }
+      return "reopened";
     }
+
+    return null;
+  };
+
+  const setTeamCurrentStatus = async (
+    executor: any,
+    eventId: number | string,
+    teamId: number | string,
+    statusId: number | string | null,
+  ) => {
+    const nowIso = new Date().toISOString();
+    const nowMs = Date.now();
+    const existing = await executor("team_current_statuses")
+      .where({ team_id: teamId })
+      .first();
+
+    if (existing) {
+      await executor("team_current_statuses")
+        .where({ team_id: teamId })
+        .update({
+          event_id: eventId,
+          status_id: statusId || null,
+          updated_at: nowIso,
+          updated_at_ms: nowMs,
+        });
+      return;
+    }
+
+    await executor("team_current_statuses").insert({
+      team_id: teamId,
+      event_id: eventId,
+      status_id: statusId || null,
+      updated_at: nowIso,
+      updated_at_ms: nowMs,
+    });
   };
 
   const validateStatusFlags = (isStart: number, isBusy: number) => {
@@ -550,6 +691,31 @@ export async function createApp() {
       .orderBy("id", "asc")
       .first();
     if (busyStatus) return Number(busyStatus.id);
+
+    const firstStatus = await trx("statuses")
+      .where({ event_id: eventId })
+      .orderBy("id", "asc")
+      .first();
+    return firstStatus ? Number(firstStatus.id) : null;
+  };
+
+  const resolveStartStatusId = async (
+    trx: any,
+    eventId: number | string,
+    preferredStatusId?: number | null,
+  ) => {
+    if (preferredStatusId) {
+      const specific = await trx("statuses")
+        .where({ id: preferredStatusId, event_id: eventId })
+        .first();
+      if (specific && Number(specific.is_start) === 1) return Number(specific.id);
+    }
+
+    const startStatus = await trx("statuses")
+      .where({ event_id: eventId, is_start: 1 })
+      .orderBy("id", "asc")
+      .first();
+    if (startStatus) return Number(startStatus.id);
 
     const firstStatus = await trx("statuses")
       .where({ event_id: eventId })
@@ -1771,11 +1937,25 @@ export async function createApp() {
   // Teams
   app.get("/api/events/:id/teams", requireAuth, async (req, res) => {
     if (!await ensureEventAccess(req, res, req.params.id)) return;
+    const now = Date.now();
     const viewerAidPostId = await getViewerAidPostIdForEvent(req, req.params.id);
     const teamsQuery = db("teams as t")
       .leftJoin("aid_posts as ap", "t.aid_post_id", "ap.id")
+      .leftJoin("team_current_statuses as tcs", "t.id", "tcs.team_id")
+      .leftJoin("statuses as cs", "tcs.status_id", "cs.id")
       .where("t.event_id", req.params.id)
-      .select("t.*", "ap.name as aid_post_name");
+      .select(
+        "t.*",
+        "ap.name as aid_post_name",
+        "tcs.status_id as current_status_id",
+        "tcs.updated_at as current_status_updated_at",
+        "tcs.updated_at_ms as current_status_updated_at_ms",
+        "cs.name as current_status_name",
+        "cs.color as current_status_color",
+        "cs.is_start as current_status_is_start",
+        "cs.is_closed as current_status_is_closed",
+        "cs.is_busy as current_status_is_busy",
+      );
     if (req.session?.role === "VIEWER") {
       if (viewerAidPostId) {
         teamsQuery.andWhere("t.aid_post_id", viewerAidPostId);
@@ -1786,7 +1966,15 @@ export async function createApp() {
     const teams = await teamsQuery;
     const teamsWithMembers = await Promise.all(teams.map(async team => {
       const members = await db("team_members").where({ team_id: team.id });
-      return { ...team, members };
+      const currentStatusDurationSeconds = team.current_status_updated_at
+        ? Math.max(0, Math.floor((now - (Number(team.current_status_updated_at_ms) || timestampMs(team.current_status_updated_at))) / 1000))
+        : null;
+      return {
+        ...team,
+        current_status_duration_seconds: currentStatusDurationSeconds,
+        current_status_duration_calculated_at: new Date(now).toISOString(),
+        members,
+      };
     }));
     res.json(teamsWithMembers);
   });
@@ -1809,12 +1997,22 @@ export async function createApp() {
         return res.status(400).json({ error: aidPostValidation.error });
       }
 
-      const [id] = await db("teams").insert({
-        event_id: req.params.id,
-        name,
-        type,
-        aid_post_id: aidPostValidation.aidPostId,
-        is_deployed: 1,
+      const [id] = await db.transaction(async trx => {
+        const [createdId] = await trx("teams").insert({
+          event_id: req.params.id,
+          name,
+          type,
+          aid_post_id: aidPostValidation.aidPostId,
+          is_deployed: 1,
+        });
+        const startStatus = await trx("statuses")
+          .where({ event_id: req.params.id, is_start: 1 })
+          .orderBy("id", "asc")
+          .first();
+        if (startStatus) {
+          await setTeamCurrentStatus(trx, req.params.id, createdId, startStatus.id);
+        }
+        return [createdId];
       });
       const aidPostName = aidPostValidation.aidPostId
         ? (await db("aid_posts").where({ id: aidPostValidation.aidPostId }).select("name").first())?.name
@@ -1969,11 +2167,15 @@ export async function createApp() {
       .orderBy("created_at", "asc");
     
     const interventionsWithTeams = await Promise.all(interventions.map(async inter => {
+      const openedAt = timestampMs(inter.created_at);
+      const closedAt = inter.closed_at ? timestampMs(inter.closed_at) : now;
+      const open_seconds = Math.max(0, Math.floor((closedAt - openedAt) / 1000));
+
       const activeHistory = await db("intervention_status_history")
         .where({ intervention_id: inter.id })
         .whereNull("ended_at")
-        .select("team_id", "started_at");
-      const activeByTeam = new Map(activeHistory.map(h => [Number(h.team_id), h.started_at]));
+        .select("team_id", "started_at", "started_at_ms");
+      const activeByTeam = new Map(activeHistory.map(h => [Number(h.team_id), h]));
 
       const teamsQuery = db("teams as t")
         .join("intervention_teams as it", "t.id", "it.team_id")
@@ -1990,27 +2192,29 @@ export async function createApp() {
       const teams = await teamsQuery;
 
       const teamsWithDuration = teams.map(team => {
-        const statusStartedAt = activeByTeam.get(Number(team.id)) || null;
-        const statusDurationSeconds = statusStartedAt
-          ? Math.max(0, Math.floor((now - new Date(statusStartedAt).getTime()) / 1000))
-          : null;
+        const activeStatus = activeByTeam.get(Number(team.id)) || null;
+        const statusStartedAt = activeStatus?.started_at || null;
+        const statusStartedAtMs = activeStatus ? (Number(activeStatus.started_at_ms) || timestampMs(activeStatus.started_at)) : null;
+        const statusDurationSeconds = durationSecondsFromEpoch(statusStartedAtMs, now, open_seconds);
         return {
           ...team,
           status_started_at: statusStartedAt,
+          status_started_at_ms: statusStartedAtMs,
           status_duration_seconds: statusDurationSeconds,
+          status_duration_calculated_at: new Date(now).toISOString(),
         };
       });
 
       const history = await db("intervention_status_history as h")
         .leftJoin("statuses as s", "h.status_id", "s.id")
         .where("h.intervention_id", inter.id)
-        .select("h.status_id", "s.name as status_name", "h.started_at", "h.ended_at");
+        .select("h.status_id", "s.name as status_name", "h.started_at", "h.ended_at", "h.started_at_ms", "h.ended_at_ms");
 
       const durationByStatus = new Map<string, number>();
       for (const row of history) {
-        const from = new Date(row.started_at).getTime();
-        const to = row.ended_at ? new Date(row.ended_at).getTime() : now;
-        const seconds = Math.max(0, Math.floor((to - from) / 1000));
+        const from = Number(row.started_at_ms) || timestampMs(row.started_at);
+        const to = row.ended_at ? (Number(row.ended_at_ms) || timestampMs(row.ended_at)) : now;
+        const seconds = durationSecondsFromEpoch(from, to) ?? 0;
         const key = row.status_name || `Status ${row.status_id ?? "Onbekend"}`;
         durationByStatus.set(key, (durationByStatus.get(key) || 0) + seconds);
       }
@@ -2020,11 +2224,43 @@ export async function createApp() {
         total_seconds,
       }));
 
-      const openedAt = new Date(inter.created_at).getTime();
-      const closedAt = inter.closed_at ? new Date(inter.closed_at).getTime() : now;
-      const open_seconds = Math.max(0, Math.floor((closedAt - openedAt) / 1000));
+      const historyQuery = db("intervention_status_history as h")
+        .join("teams as t", "h.team_id", "t.id")
+        .leftJoin("statuses as s", "h.status_id", "s.id")
+        .where("h.intervention_id", inter.id)
+        .select(
+          "h.id",
+          "h.team_id",
+          "t.name as team_name",
+          "t.type as team_type",
+          "h.status_id",
+          "s.name as status_name",
+          "s.color as status_color",
+          "h.started_at",
+          "h.ended_at",
+          "h.started_at_ms",
+          "h.ended_at_ms",
+        )
+        .orderBy("h.started_at", "asc")
+        .orderBy("h.id", "asc");
+      if (req.session?.role === "VIEWER") {
+        if (viewerAidPostId) {
+          historyQuery.andWhere("t.aid_post_id", viewerAidPostId);
+        } else {
+          historyQuery.whereRaw("1 = 0");
+        }
+      }
+      const team_history = (await historyQuery).map((entry: any) => {
+        const from = Number(entry.started_at_ms) || timestampMs(entry.started_at);
+        const to = entry.ended_at ? (Number(entry.ended_at_ms) || timestampMs(entry.ended_at)) : now;
+        return {
+          ...entry,
+          duration_seconds: durationSecondsFromEpoch(from, to, entry.ended_at ? null : open_seconds) ?? 0,
+          duration_calculated_at: new Date(now).toISOString(),
+        };
+      });
 
-      return { ...inter, open_seconds, status_durations, teams: teamsWithDuration };
+      return { ...inter, open_seconds, open_seconds_calculated_at: new Date(now).toISOString(), status_durations, team_history, teams: teamsWithDuration };
     }));
     
     res.json(interventionsWithTeams);
@@ -2033,6 +2269,8 @@ export async function createApp() {
   app.post("/api/events/:id/interventions", requireRole(["ROOT", "ADMIN", "OPERATOR"]), async (req, res) => {
     if (!await ensureEventAccess(req, res, req.params.id)) return;
     const { title, location, description, status_id, team_ids } = req.body;
+    const normalizedTitle = String(title || "").trim();
+    if (!normalizedTitle) return res.status(400).json({ error: "Titel is verplicht" });
     try {
       const interventionId = await db.transaction(async trx => {
         const requestedTeamIds = Array.isArray(team_ids)
@@ -2078,12 +2316,14 @@ export async function createApp() {
         const [id] = await trx("interventions").insert({
           event_id: req.params.id,
           intervention_number: nextInterventionNo,
-          title,
-          location,
-          description
+          title: normalizedTitle,
+          location: typeof location === "string" ? location.trim() : "",
+          description: typeof description === "string" ? description.trim() : ""
         });
         
         if (validTeamIds.length > 0) {
+          const nowMs = Date.now();
+          const nowIso = new Date(nowMs).toISOString();
           await trx("intervention_teams").insert(
             validTeamIds.map((teamId: number) => ({ 
               intervention_id: id, 
@@ -2097,16 +2337,22 @@ export async function createApp() {
               intervention_id: id,
               team_id: teamId,
               status_id: resolvedStatusId || null,
-              started_at: new Date().toISOString(),
+              started_at: nowIso,
+              started_at_ms: nowMs,
               ended_at: null,
+              ended_at_ms: null,
             }))
           );
+
+          for (const teamId of validTeamIds) {
+            await setTeamCurrentStatus(trx, req.params.id, teamId, resolvedStatusId);
+          }
         }
         
         await writeActionLog(trx, req, {
           event_id: req.params.id,
           intervention_id: id,
-          message: `Nieuwe interventie aangemaakt: ${title}`
+          message: `Nieuwe interventie aangemaakt: ${normalizedTitle}`
         });
           
         return id;
@@ -2130,7 +2376,7 @@ export async function createApp() {
   });
 
   app.patch("/api/interventions/:id", requireRole(["ROOT", "ADMIN", "OPERATOR"]), async (req: any, res) => {
-    const { location, description, add_team_ids, remove_team_ids, default_status_id } = req.body || {};
+    const { title, location, description, add_team_ids, remove_team_ids, default_status_id } = req.body || {};
     try {
       const intervention = await db("interventions").where({ id: req.params.id }).first();
       if (!intervention) return res.status(404).json({ error: "Interventie niet gevonden" });
@@ -2140,6 +2386,25 @@ export async function createApp() {
       const removeTeamIds = toPositiveIntArray(remove_team_ids);
 
       await db.transaction(async trx => {
+        if (typeof title === "string") {
+          const normalizedTitle = title.trim();
+          if (!normalizedTitle) {
+            throw new Error("EMPTY_INTERVENTION_TITLE");
+          }
+          if (normalizedTitle !== intervention.title) {
+            await trx("interventions")
+              .where({ id: intervention.id })
+              .update({ title: normalizedTitle });
+
+            await writeActionLog(trx, req, {
+              event_id: intervention.event_id,
+              intervention_id: intervention.id,
+              message: `Titel van interventie gewijzigd van "${intervention.title}" naar "${normalizedTitle}"`,
+            });
+            intervention.title = normalizedTitle;
+          }
+        }
+
         if (typeof location === "string" && location !== intervention.location) {
           await trx("interventions")
             .where({ id: intervention.id })
@@ -2174,19 +2439,22 @@ export async function createApp() {
 
           if (linkedToRemove.length > 0) {
             const ids = linkedToRemove.map((r: any) => r.team_id);
+            const startStatusId = await resolveStartStatusId(trx, intervention.event_id, null);
 
             await trx("intervention_teams")
               .where({ intervention_id: intervention.id })
               .whereIn("team_id", ids)
               .del();
 
+            const nowMs = Date.now();
             await trx("intervention_status_history")
               .where({ intervention_id: intervention.id })
               .whereIn("team_id", ids)
               .whereNull("ended_at")
-              .update({ ended_at: new Date().toISOString() });
+              .update({ ended_at: new Date(nowMs).toISOString(), ended_at_ms: nowMs });
 
             for (const t of linkedToRemove) {
+              await setTeamCurrentStatus(trx, intervention.event_id, t.team_id, startStatusId);
               await writeActionLog(trx, req, {
                 event_id: intervention.event_id,
                 intervention_id: intervention.id,
@@ -2207,6 +2475,13 @@ export async function createApp() {
               .map((r: any) => toPositiveInt(r.team_id))
               .filter((teamId): teamId is number => teamId != null)
           );
+          if (existingSet.size > 0) {
+            const duplicateTeams = await trx("teams")
+              .where({ event_id: intervention.event_id })
+              .whereIn("id", [...existingSet])
+              .select("name");
+            throw new Error(`TEAM_ALREADY_LINKED:${duplicateTeams.map((t: any) => t.name).join(", ")}`);
+          }
 
           const candidateTeams = await trx("teams")
             .where({ event_id: intervention.event_id })
@@ -2225,6 +2500,8 @@ export async function createApp() {
           );
 
           if (teamsToAdd.length > 0) {
+            const nowMs = Date.now();
+            const nowIso = new Date(nowMs).toISOString();
             const blockedTeams = await getBlockedTeamsForInterventionAdd(
               trx,
               intervention.event_id,
@@ -2251,12 +2528,15 @@ export async function createApp() {
                 intervention_id: intervention.id,
                 team_id: t.id,
                 status_id: targetStatusId,
-                started_at: new Date().toISOString(),
+                started_at: nowIso,
+                started_at_ms: nowMs,
                 ended_at: null,
+                ended_at_ms: null,
               }))
             );
 
             for (const t of teamsToAdd) {
+              await setTeamCurrentStatus(trx, intervention.event_id, t.id, targetStatusId);
               await writeActionLog(trx, req, {
                 event_id: intervention.event_id,
                 intervention_id: intervention.id,
@@ -2267,11 +2547,21 @@ export async function createApp() {
           }
         }
 
-        await recalculateInterventionClosedState(trx, intervention.id);
+        const closeReason = await recalculateInterventionClosedState(trx, intervention.id);
+        if (closeReason === "closed_no_active_teams" || closeReason === "closed_all_teams") {
+          await writeActionLog(trx, req, {
+            event_id: intervention.event_id,
+            intervention_id: intervention.id,
+            message: `Interventie "${intervention.title}" automatisch gesloten${closeReason === "closed_no_active_teams" ? " omdat er geen ploegen meer gekoppeld zijn" : " omdat alle gekoppelde ploegen een eindstatus hebben"}`,
+          });
+        }
       });
 
       res.json({ success: true });
     } catch (error) {
+      if (error instanceof Error && error.message === "EMPTY_INTERVENTION_TITLE") {
+        return res.status(400).json({ error: "Titel is verplicht" });
+      }
       if (error instanceof Error && error.message.startsWith("TEAM_NOT_DEPLOYED:")) {
         return res.status(400).json({
           error: `Niet-ingezette ploeg kan niet gekoppeld worden aan interventie: ${error.message.replace("TEAM_NOT_DEPLOYED:", "")}`,
@@ -2280,6 +2570,11 @@ export async function createApp() {
       if (error instanceof Error && error.message.startsWith("TEAM_NOT_ALLOWED_STATUS:")) {
         return res.status(400).json({
           error: `Ploeg toevoegen kan enkel vanuit een beginstatus of gesloten status. Blokkering: ${error.message.replace("TEAM_NOT_ALLOWED_STATUS:", "")}`,
+        });
+      }
+      if (error instanceof Error && error.message.startsWith("TEAM_ALREADY_LINKED:")) {
+        return res.status(400).json({
+          error: `Ploeg is al gekoppeld aan deze interventie: ${error.message.replace("TEAM_ALREADY_LINKED:", "")}`,
         });
       }
       console.error("Error updating intervention:", error);
@@ -2323,13 +2618,6 @@ export async function createApp() {
         return res.status(400).json({ error: "Interventie kan niet manueel gesloten worden: er zijn gekoppelde ploegen" });
       }
 
-      const historyRow = await db("intervention_status_history")
-        .where({ intervention_id: intervention.id })
-        .first();
-      if (historyRow) {
-        return res.status(400).json({ error: "Interventie kan enkel gesloten worden als er nooit een ploeg gekoppeld is geweest" });
-      }
-
       await db.transaction(async trx => {
         await trx("interventions")
           .where({ id: intervention.id })
@@ -2338,7 +2626,7 @@ export async function createApp() {
         await writeActionLog(trx, req, {
           event_id: intervention.event_id,
           intervention_id: intervention.id,
-          message: `Interventie manueel gesloten zonder ploegkoppeling: ${intervention.title}`,
+          message: `Interventie manueel gesloten zonder actieve ploegkoppeling: ${intervention.title}`,
         });
       });
 
@@ -2350,7 +2638,7 @@ export async function createApp() {
   });
 
   app.patch("/api/interventions/:id/teams/:teamId", requireRole(["ROOT", "ADMIN", "OPERATOR"]), async (req, res) => {
-    const { status_id } = req.body;
+    const { status_id, aid_post_id } = req.body || {};
     const { id: interventionId, teamId } = req.params;
     try {
       const status = await db("statuses").where({ id: status_id }).first();
@@ -2359,46 +2647,203 @@ export async function createApp() {
       if (!intervention || !team || !status) {
         return res.status(404).json({ error: "Interventie, ploeg of status niet gevonden" });
       }
+      if (Number(status.event_id) !== Number(intervention.event_id) || Number(team.event_id) !== Number(intervention.event_id)) {
+        return res.status(400).json({ error: "Ploeg of status hoort niet bij dit evenement" });
+      }
       if (!await ensureEventAccess(req, res, intervention.event_id)) return;
+
+      const aidPostValidation = await validateAidPostForEvent(intervention.event_id, aid_post_id, {
+        allowNull: true,
+        invalidError: "Ongeldige bestemmingshulppost voor dit evenement",
+      });
+      if ("error" in aidPostValidation) return res.status(400).json({ error: aidPostValidation.error });
       
       await db.transaction(async trx => {
         const currentLink = await trx("intervention_teams")
           .where({ intervention_id: interventionId, team_id: teamId })
           .first();
+        if (!currentLink) {
+          throw new Error("TEAM_NOT_LINKED");
+        }
 
-        await trx("intervention_teams")
-          .where({ intervention_id: interventionId, team_id: teamId })
-          .update({ status_id });
+        const nowMs = Date.now();
+        const nowIso = new Date(nowMs).toISOString();
 
-        if (currentLink && Number(currentLink.status_id) !== Number(status_id)) {
+        if (Number(status.is_start) !== 1) {
           await trx("intervention_status_history")
             .where({ intervention_id: interventionId, team_id: teamId })
             .whereNull("ended_at")
-            .update({ ended_at: new Date().toISOString() });
+            .update({ ended_at: nowIso, ended_at_ms: nowMs });
 
           await trx("intervention_status_history").insert({
             intervention_id: interventionId,
             team_id: teamId,
             status_id: status_id || null,
-            started_at: new Date().toISOString(),
+            started_at: nowIso,
+            started_at_ms: nowMs,
             ended_at: null,
+            ended_at_ms: null,
           });
         }
 
-        await recalculateInterventionClosedState(trx, interventionId);
+        if (Number(status.is_start) === 1) {
+          await trx("intervention_teams")
+            .where({ intervention_id: interventionId, team_id: teamId })
+            .del();
+          await trx("intervention_status_history")
+            .where({ intervention_id: interventionId, team_id: teamId })
+            .whereNull("ended_at")
+            .update({ ended_at: nowIso, ended_at_ms: nowMs });
+        } else {
+          await trx("intervention_teams")
+            .where({ intervention_id: interventionId, team_id: teamId })
+            .update({ status_id });
+        }
+
+        await setTeamCurrentStatus(trx, intervention.event_id, team.id, status.id);
+
+        if (aidPostValidation.aidPostId) {
+          await trx("teams").where({ id: team.id }).update({ aid_post_id: aidPostValidation.aidPostId });
+        }
+
+        const closeReason = await recalculateInterventionClosedState(trx, interventionId);
+
+        const destination = aidPostValidation.aidPostId
+          ? await trx("aid_posts").where({ id: aidPostValidation.aidPostId }).first()
+          : null;
 
         await writeActionLog(trx, req, {
           event_id: intervention.event_id,
           team_id: team.id,
           intervention_id: intervention.id,
-          message: `Status van ploeg "${team.name}" in interventie "${intervention.title}" gewijzigd naar "${status.name}"`
+          message: `Status van ploeg "${team.name}" in interventie "${intervention.title}" gewijzigd naar "${status.name}"${destination ? `; afgevoerd naar hulppost "${destination.name}"` : ""}${Number(status.is_start) === 1 ? "; ploeg ontkoppeld en radiografisch beschikbaar" : ""}`
         });
+        if (closeReason === "closed_no_active_teams" || closeReason === "closed_all_teams") {
+          await writeActionLog(trx, req, {
+            event_id: intervention.event_id,
+            intervention_id: intervention.id,
+            message: `Interventie "${intervention.title}" automatisch gesloten${closeReason === "closed_no_active_teams" ? " omdat er geen ploegen meer gekoppeld zijn" : " omdat alle gekoppelde ploegen een eindstatus hebben"}`,
+          });
+        }
       });
       
       res.json({ success: true });
     } catch (error) {
+      if (error instanceof Error && error.message === "TEAM_NOT_LINKED") {
+        return res.status(400).json({ error: "Ploeg is niet gekoppeld aan deze interventie" });
+      }
       console.error("Error updating team status:", error);
       res.status(500).json({ error: "Update failed" });
+    }
+  });
+
+  app.delete("/api/interventions/:id/teams/:teamId", requireRole(["ROOT", "ADMIN", "OPERATOR"]), async (req, res) => {
+    const { id: interventionId, teamId } = req.params;
+    const requestedStatusId = toPositiveInt(req.body?.status_id);
+    const unlinkAction = String(req.body?.action || "unlink").toLowerCase();
+    const isOvtz = unlinkAction === "ovtz";
+    try {
+      const intervention = await db("interventions").where({ id: interventionId }).first();
+      const team = await db("teams").where({ id: teamId }).first();
+      if (!intervention || !team) {
+        return res.status(404).json({ error: "Interventie of ploeg niet gevonden" });
+      }
+      if (Number(team.event_id) !== Number(intervention.event_id)) {
+        return res.status(400).json({ error: "Ploeg hoort niet bij dit evenement" });
+      }
+      if (!await ensureEventAccess(req, res, intervention.event_id)) return;
+
+      await db.transaction(async trx => {
+        const currentLink = await trx("intervention_teams")
+          .where({ intervention_id: intervention.id, team_id: team.id })
+          .first();
+        if (!currentLink) throw new Error("TEAM_NOT_LINKED");
+
+        const startStatusId = await resolveStartStatusId(trx, intervention.event_id, requestedStatusId);
+        const nowMs = Date.now();
+        const nowIso = new Date(nowMs).toISOString();
+
+        await trx("intervention_teams")
+          .where({ intervention_id: intervention.id, team_id: team.id })
+          .del();
+        await trx("intervention_status_history")
+          .where({ intervention_id: intervention.id, team_id: team.id })
+          .whereNull("ended_at")
+          .update({ ended_at: nowIso, ended_at_ms: nowMs });
+        await setTeamCurrentStatus(trx, intervention.event_id, team.id, startStatusId);
+        const closeReason = await recalculateInterventionClosedState(trx, intervention.id);
+
+        const status = startStatusId
+          ? await trx("statuses").where({ id: startStatusId }).first()
+          : null;
+        await writeActionLog(trx, req, {
+          event_id: intervention.event_id,
+          intervention_id: intervention.id,
+          team_id: team.id,
+          message: isOvtz
+            ? `OVTZ: ploeg "${team.name}" ontkoppeld van interventie "${intervention.title}"${status ? ` en radiografisch beschikbaar gezet op "${status.name}"` : " en radiografisch beschikbaar gezet"}`
+            : `Ploeg "${team.name}" ontkoppeld van interventie "${intervention.title}"${status ? ` en op "${status.name}" gezet` : ""}`,
+        });
+        if (closeReason === "closed_no_active_teams" || closeReason === "closed_all_teams") {
+          await writeActionLog(trx, req, {
+            event_id: intervention.event_id,
+            intervention_id: intervention.id,
+            message: `Interventie "${intervention.title}" automatisch gesloten omdat er geen ploegen meer gekoppeld zijn`,
+          });
+        }
+      });
+
+      res.json({ success: true });
+    } catch (error) {
+      if (error instanceof Error && error.message === "TEAM_NOT_LINKED") {
+        return res.status(400).json({ error: "Ploeg is niet gekoppeld aan deze interventie" });
+      }
+      console.error("Error unlinking team:", error);
+      res.status(500).json({ error: "Ploeg ontkoppelen mislukt" });
+    }
+  });
+
+  app.patch("/api/teams/:id/status", requireRole(["ROOT", "ADMIN", "OPERATOR"]), async (req, res) => {
+    const statusId = toPositiveInt(req.body?.status_id);
+    if (!statusId) return res.status(400).json({ error: "Status is verplicht" });
+
+    try {
+      const team = await db("teams").where({ id: req.params.id }).first();
+      const status = await db("statuses").where({ id: statusId }).first();
+      if (!team || !status) return res.status(404).json({ error: "Ploeg of status niet gevonden" });
+      if (Number(team.event_id) !== Number(status.event_id)) {
+        return res.status(400).json({ error: "Status hoort niet bij dit evenement" });
+      }
+      if (!await ensureEventAccess(req, res, team.event_id)) return;
+
+      await db.transaction(async trx => {
+        const activeLinks = await trx("intervention_teams as it")
+          .join("interventions as i", "it.intervention_id", "i.id")
+          .where("it.team_id", team.id)
+          .where("i.event_id", team.event_id)
+          .whereNull("i.closed_at")
+          .select("i.title");
+        if (activeLinks.length > 0) {
+          throw new Error(`TEAM_HAS_ACTIVE_INTERVENTION:${activeLinks.map((r: any) => r.title).join(", ")}`);
+        }
+
+        await setTeamCurrentStatus(trx, team.event_id, team.id, status.id);
+        await writeActionLog(trx, req, {
+          event_id: team.event_id,
+          team_id: team.id,
+          message: `Status van ploeg "${team.name}" zonder interventie gewijzigd naar "${status.name}"`,
+        });
+      });
+
+      res.json({ success: true });
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("TEAM_HAS_ACTIVE_INTERVENTION:")) {
+        return res.status(400).json({
+          error: `Ploeg is nog gekoppeld aan een actieve interventie: ${error.message.replace("TEAM_HAS_ACTIVE_INTERVENTION:", "")}`,
+        });
+      }
+      console.error("Error updating standalone team status:", error);
+      res.status(500).json({ error: "Ploegstatus wijzigen mislukt" });
     }
   });
 
@@ -2692,12 +3137,22 @@ export async function createApp() {
 
   app.post("/api/settings", requireRole(["ROOT", "ADMIN"]), sensitiveRateLimit, async (req, res) => {
     const settings = req.body;
-    await db.transaction(async trx => {
-      for (const [key, value] of Object.entries(settings)) {
-        await trx("settings").where({ key }).update({ value: String(value) });
+    try {
+      await db.transaction(async trx => {
+        for (const [key, value] of Object.entries(settings)) {
+          if (key === "timezone" && !normalizeTimezone(value)) {
+            throw new Error("INVALID_TIMEZONE");
+          }
+          await trx("settings").where({ key }).update({ value: String(value) });
+        }
+      });
+      res.json({ success: true });
+    } catch (error) {
+      if (error instanceof Error && error.message === "INVALID_TIMEZONE") {
+        return res.status(400).json({ error: "Ongeldige tijdzone" });
       }
-    });
-    res.json({ success: true });
+      throw error;
+    }
   });
 
   app.post("/api/settings/logo-upload", requireRole(["ROOT", "ADMIN"]), uploadRateLimit, async (req, res) => {

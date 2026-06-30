@@ -1,5 +1,4 @@
-# Raspberry Pi compatible build (kept as default for compose/script compatibility).
-FROM node:22-bookworm-slim
+FROM node:22-alpine
 
 ARG APP_VERSION=dev
 LABEL org.opencontainers.image.title="CP-OPS" \
@@ -9,17 +8,11 @@ LABEL org.opencontainers.image.title="CP-OPS" \
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    make \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY package*.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build
+RUN npm run clean && npm run build
 
 RUN mkdir -p /app/data /app/uploads
 
@@ -36,7 +29,9 @@ ENV NODE_ENV=production \
     DB_POOL_IDLE_TIMEOUT_MS=30000 \
     DB_POOL_REAP_INTERVAL_MS=1000 \
     DB_ACQUIRE_CONNECTION_TIMEOUT_MS=15000 \
-    SESSION_IDLE_TIMEOUT_MINUTES=30 \
+    SESSION_IDLE_TIMEOUT_MINUTES=60 \
+    SESSION_COOKIE_SECURE=auto \
+    SESSION_COOKIE_SAMESITE=lax \
     UPLOAD_STORAGE=fs
 
 EXPOSE 31987

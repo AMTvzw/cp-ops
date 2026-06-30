@@ -31,6 +31,7 @@ interface Settings {
   border_color: string;
   danger_color: string;
   danger_hover_color: string;
+  timezone: string;
 }
 
 interface UserContextType {
@@ -71,7 +72,8 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     muted_text_color: '#475569',
     border_color: '#cbd5e1',
     danger_color: '#dc2626',
-    danger_hover_color: '#b91c1c'
+    danger_hover_color: '#b91c1c',
+    timezone: 'Europe/Brussels'
   });
   const [loading, setLoading] = useState(true);
 
