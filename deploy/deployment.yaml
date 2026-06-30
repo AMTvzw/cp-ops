@@ -1,0 +1,128 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cpops
+  labels:
+    name: cpops
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: cpops
+  name: cpops
+  namespace: cpops
+spec:
+  allocateLoadBalancerNodePorts: true
+  clusterIP: 10.43.82.160
+  clusterIPs:
+  - 10.43.82.160
+  externalTrafficPolicy: Cluster
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - nodePort: 30823
+    port: 31987
+    protocol: TCP
+    targetPort: 31987
+  selector:
+    app: cpops
+  sessionAffinity: None
+  type: LoadBalancer
+status:
+  loadBalancer:
+    ingress:
+    - ip: 192.168.129.28
+      ipMode: VIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpops
+  labels:
+    app: cpops
+  namespace: cpops
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: cpops
+  template:
+    metadata:
+      labels:
+        app: cpops
+    spec:
+      containers:
+      - name: cpops
+        image: ravenvanhove/cp-ops:latest
+        # ports:
+        # - containerPort: 31987
+        #   name: http-web-svc
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: SESSION_SECRET
+          value: "ThisIsAVerySecureString1123581321"
+        - name: SESSION_IDLE_TIMEOUT_MINUTES
+          value: "60"
+        - name: DEFAULT_ROOT_USERNAME
+          value: "ROOT"
+        - name: DEFAULT_ROOT_PASSWORD
+          value: "AMT2610cpops"
+        - name: DB_CLIENT
+          value: "mysql2"
+        - name: DB_HOST
+          value: "ID380122_cpops.db.webhosting.be"
+        - name: DB_PORT
+          value: "3306"
+        - name: DB_USER
+          value: "ID380122_cpops"
+        - name: DB_PASSWORD
+          value: "AMT2610cpops"
+        - name: DB_NAME
+          value: "ID380122_cpops"
+        - name: PUBLIC_ORIGIN
+          value: "http://109.132.164.227:31987"
+        - name: ALLOWED_ORIGINS
+          value: "http://109.132.164.227:31987"
+        - name: SESSION_COOKIE_SECURE
+          value: "auto"
+        - name: SESSION_COOKIE_SAMESITE
+          value: "lax"
+
+
+# NODE_ENV=production
+# SESSION_SECRET=ThisIsAVerySecureString1123581321
+# SESSION_IDLE_TIMEOUT_MINUTES=60
+# DEFAULT_ROOT_USERNAME=ROOT
+# DEFAULT_ROOT_PASSWORD=AMT2610cpops
+# External MariaDB/MySQL via separate values:
+# DB_CLIENT=mysql2
+# DB_HOST=ID380122_cpops.db.webhosting.be
+# DB_PORT=3306
+# DB_USER=ID380122_cpops
+# DB_PASSWORD=AMT2610cpops
+# DB_NAME=ID380122_cpops
+# Local development database (SQLite, optional)
+# DB_CLIENT=sqlite3
+# DB_FILENAME=data/cp_ops.sqlite
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cpops
+  namespace: cpops
+spec:
+  rules:
+    - host: hello.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cpops
+                port:
+                  number: 31987
