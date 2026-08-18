@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cpops
+  labels:
+    name: cpops
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpops
+  namespace: cpops
+  labels:
+    app: cpops
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: cpops
+  template:
+    metadata:
+      labels:
+        app: cpops
+    spec:
+      containers:
+      - name: cpops
+        image: ravenvanhove/cp-ops:latest
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "31987"
+        - name: SESSION_SECRET
+          value: "ThisIsAVerySecureString1123581321"
+        - name: SESSION_IDLE_TIMEOUT_MINUTES
+          value: "60"
+        - name: SESSION_COOKIE_SECURE
+          value: "auto"
+        - name: SESSION_COOKIE_SAMESITE
+          value: "lax"
+        - name: DEFAULT_ROOT_USERNAME
+          value: "ROOT"
+        - name: DEFAULT_ROOT_PASSWORD
+          value: "AMT2610cpops"
+        - name: PUBLIC_ORIGIN
+          value: ""
+        - name: ALLOWED_ORIGINS
+          value: ""
+        - name: DB_CLIENT
+          value: "mysql2"
+        - name: DB_HOST
+          value: "ID380122_cpops.db.webhosting.be"
+        - name: DB_PORT
+          value: "3306"
+        - name: DB_USER
+          value: "ID380122_cpops"
+        - name: DB_PASSWORD
+          value: "AMT2610cpops"
+        - name: DB_NAME
+          value: "ID380122_cpops"
+        - name: UPLOAD_STORAGE
+          value: "db"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cpops
+  namespace: cpops
+spec:
+  selector:
+    app: cpops
+  ports:
+    - port: 31987
+      targetPort: 31987
+  type: LoadBalancer
